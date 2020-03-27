@@ -1,0 +1,37 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 16
+VisualStudioVersion = 16.0.29911.84
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "imgui", "imgui\imgui.vcxproj", "{6132A438-DF15-4409-84F2-936FD60FB165}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "main", "main\main.vcxproj", "{0049F9B8-4B0B-4B09-8102-0645BA20F3C1}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "transforms", "transforms\transforms.vcxproj", "{95914431-B3D9-4274-9257-A649DBCF04C7}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{6132A438-DF15-4409-84F2-936FD60FB165}.Debug|x64.ActiveCfg = Debug|x64
+		{6132A438-DF15-4409-84F2-936FD60FB165}.Debug|x64.Build.0 = Debug|x64
+		{6132A438-DF15-4409-84F2-936FD60FB165}.Release|x64.ActiveCfg = Release|x64
+		{6132A438-DF15-4409-84F2-936FD60FB165}.Release|x64.Build.0 = Release|x64
+		{0049F9B8-4B0B-4B09-8102-0645BA20F3C1}.Debug|x64.ActiveCfg = Debug|x64
+		{0049F9B8-4B0B-4B09-8102-0645BA20F3C1}.Debug|x64.Build.0 = Debug|x64
+		{0049F9B8-4B0B-4B09-8102-0645BA20F3C1}.Release|x64.ActiveCfg = Release|x64
+		{0049F9B8-4B0B-4B09-8102-0645BA20F3C1}.Release|x64.Build.0 = Release|x64
+		{95914431-B3D9-4274-9257-A649DBCF04C7}.Debug|x64.ActiveCfg = Debug|x64
+		{95914431-B3D9-4274-9257-A649DBCF04C7}.Debug|x64.Build.0 = Debug|x64
+		{95914431-B3D9-4274-9257-A649DBCF04C7}.Release|x64.ActiveCfg = Release|x64
+		{95914431-B3D9-4274-9257-A649DBCF04C7}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {AC4636D3-1857-4226-AAE3-AD4A924D655F}
+	EndGlobalSection
+EndGlobal
