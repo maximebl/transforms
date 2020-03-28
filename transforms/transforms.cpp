@@ -83,6 +83,7 @@ HRESULT hr;
 #define NUM_BACK_BUFFERS 3
 UINT backbuffer_index = 0; // gets updated after each call to Present()
 UINT next_backbuffer_index = 0;
+UINT srv_desc_handle_incr_size = 0;
 static HWND* g_hwnd;
 static UINT64 hwnd_width;
 static UINT hwnd_height;
@@ -167,9 +168,15 @@ struct mesh
 {
 	ID3D12Resource* vertex_default_resource;
 	ID3D12Resource* vertex_upload_resource;
+	ID3D12Resource* model_cb_resource;
+	model_cb* cpu_mapped_model_cb;
 	D3D12_VERTEX_BUFFER_VIEW vbv;
 };
-mesh triangle;
+mesh triangles[100000];
+
+int total_tris_torender = 0;
+int num_tris_rendered = 0;
+int num_missing_tris = 0;
 
 void create_triangle(ID3D12GraphicsCommandList* cmd_list);
 void init_pipeline();
@@ -341,7 +348,7 @@ bool create_device()
 		D3D12_DESCRIPTOR_HEAP_DESC main_heap_desc;
 		main_heap_desc.NodeMask = 1;
 		main_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE::D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-		main_heap_desc.NumDescriptors = 1;
+		main_heap_desc.NumDescriptors = 100000;
 		main_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAGS::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 		hr = g_device->CreateDescriptorHeap(&main_heap_desc, __uuidof(ID3D12DescriptorHeap), (void**)&cbv_srv_uav_heap);
 
@@ -419,6 +426,7 @@ bool create_device()
 
 	g_hswapchain_waitableobject = g_swapchain->GetFrameLatencyWaitableObject();
 
+	srv_desc_handle_incr_size = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE::D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 	create_rendertarget();
 	create_dsv(hwnd_width, hwnd_height);
 	create_query_objects();
@@ -489,62 +497,60 @@ void cleanup_rendertarget()
 
 void create_triangle(ID3D12GraphicsCommandList* cmd_list)
 {
-	position_color vertices[triangle_vertices_count] =
-	{
-		 { { 0.0f , 0.25f, 0.0f, 1.0f} , {1.0f , 0.0f, 0.0f, 1.0f}} ,
-		 { { 0.25f , -0.25f , 0.0f, 1.0f} , {0.0f , 1.0f, 0.0f, 1.0f}} ,
-		 { {  -0.25f , -0.25f , 0.0f, 1.0f} , {0.0f , 0.0f, 1.0f, 1.f}} ,
-	};
+	//position_color vertices[triangle_vertices_count] =
+	//{
+	//	 { { 0.0f , 0.25f, 0.0f, 1.0f} , {1.0f , 0.0f, 0.0f, 1.0f}} ,
+	//	 { { 0.25f , -0.25f , 0.0f, 1.0f} , {0.0f , 1.0f, 0.0f, 1.0f}} ,
+	//	 { {  -0.25f , -0.25f , 0.0f, 1.0f} , {0.0f , 0.0f, 1.0f, 1.f}} ,
+	//};
 
-	size_t stride = sizeof(position_color);
-	size_t vertex_buffer_byte_size = stride * _countof(vertices);
+	//size_t stride = sizeof(position_color);
+	//size_t vertex_buffer_byte_size = stride * _countof(vertices);
 
-	hr = g_device->CreateCommittedResource(
-		&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE::D3D12_HEAP_TYPE_DEFAULT),
-		D3D12_HEAP_FLAGS::D3D12_HEAP_FLAG_NONE,
-		&CD3DX12_RESOURCE_DESC::Buffer(vertex_buffer_byte_size),
-		D3D12_RESOURCE_STATES::D3D12_RESOURCE_STATE_COPY_DEST,
-		NULL,
-		__uuidof(ID3D12Resource),
-		(void**)&triangle.vertex_default_resource);
-	ASSERT(SUCCEEDED(hr));
-	triangle.vertex_default_resource->SetName(L"vertex_default_resource");
+	//hr = g_device->CreateCommittedResource(
+	//	&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE::D3D12_HEAP_TYPE_DEFAULT),
+	//	D3D12_HEAP_FLAGS::D3D12_HEAP_FLAG_NONE,
+	//	&CD3DX12_RESOURCE_DESC::Buffer(vertex_buffer_byte_size),
+	//	D3D12_RESOURCE_STATES::D3D12_RESOURCE_STATE_COPY_DEST,
+	//	NULL,
+	//	__uuidof(ID3D12Resource),
+	//	(void**)&triangle.vertex_default_resource);
+	//ASSERT(SUCCEEDED(hr));
+	//triangle.vertex_default_resource->SetName(L"vertex_default_resource");
 
-	hr = g_device->CreateCommittedResource(
-		&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE::D3D12_HEAP_TYPE_UPLOAD),
-		D3D12_HEAP_FLAGS::D3D12_HEAP_FLAG_NONE,
-		&CD3DX12_RESOURCE_DESC::Buffer(vertex_buffer_byte_size),
-		D3D12_RESOURCE_STATES::D3D12_RESOURCE_STATE_GENERIC_READ,
-		NULL,
-		__uuidof(ID3D12Resource),
-		(void**)&triangle.vertex_upload_resource);
-	ASSERT(SUCCEEDED(hr));
-	triangle.vertex_upload_resource->SetName(L"vertex_upload_resource");
+	//hr = g_device->CreateCommittedResource(
+	//	&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE::D3D12_HEAP_TYPE_UPLOAD),
+	//	D3D12_HEAP_FLAGS::D3D12_HEAP_FLAG_NONE,
+	//	&CD3DX12_RESOURCE_DESC::Buffer(vertex_buffer_byte_size),
+	//	D3D12_RESOURCE_STATES::D3D12_RESOURCE_STATE_GENERIC_READ,
+	//	NULL,
+	//	__uuidof(ID3D12Resource),
+	//	(void**)&triangle.vertex_upload_resource);
+	//ASSERT(SUCCEEDED(hr));
+	//triangle.vertex_upload_resource->SetName(L"vertex_upload_resource");
 
-	BYTE* mapped_vertex_data = NULL;
-	D3D12_RANGE range = {};
-	triangle.vertex_upload_resource->Map(0, &range, (void**)&mapped_vertex_data);
-	memcpy((void*)mapped_vertex_data,
-		(void*)vertices,
-		vertex_buffer_byte_size);
+	//BYTE* mapped_vertex_data = NULL;
+	//D3D12_RANGE range = {};
+	//triangle.vertex_upload_resource->Map(0, &range, (void**)&mapped_vertex_data);
+	//memcpy((void*)mapped_vertex_data,
+	//	(void*)vertices,
+	//	vertex_buffer_byte_size);
 
-	triangle.vertex_upload_resource->Unmap(
-		0,
-		&range);
+	//triangle.vertex_upload_resource->Unmap(0, &range);
 
-	cmd_list->CopyBufferRegion(
-		triangle.vertex_default_resource, 0,
-		triangle.vertex_upload_resource, 0,
-		vertex_buffer_byte_size);
+	//cmd_list->CopyBufferRegion(
+	//	triangle.vertex_default_resource, 0,
+	//	triangle.vertex_upload_resource, 0,
+	//	vertex_buffer_byte_size);
 
-	triangle.vbv.BufferLocation = triangle.vertex_default_resource->GetGPUVirtualAddress();
-	triangle.vbv.SizeInBytes = (UINT)vertex_buffer_byte_size;
-	triangle.vbv.StrideInBytes = (UINT)stride;
+	//triangle.vbv.BufferLocation = triangle.vertex_default_resource->GetGPUVirtualAddress();
+	//triangle.vbv.SizeInBytes = (UINT)vertex_buffer_byte_size;
+	//triangle.vbv.StrideInBytes = (UINT)stride;
 
-	cmd_list->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
-		triangle.vertex_default_resource,
-		D3D12_RESOURCE_STATES::D3D12_RESOURCE_STATE_COPY_DEST,
-		D3D12_RESOURCE_STATES::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER));
+	//cmd_list->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+	//	triangle.vertex_default_resource,
+	//	D3D12_RESOURCE_STATES::D3D12_RESOURCE_STATE_COPY_DEST,
+	//	D3D12_RESOURCE_STATES::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER));
 
 }
 
@@ -572,7 +578,7 @@ void init_pipeline()
 	model_cbv_range.RegisterSpace = 0;
 	model_cbv_range.NumDescriptors = 1;
 	model_cbv_range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-	model_cbv_range.Flags = D3D12_DESCRIPTOR_RANGE_FLAGS::D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
+	model_cbv_range.Flags = D3D12_DESCRIPTOR_RANGE_FLAGS::D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
 
 	D3D12_ROOT_DESCRIPTOR_TABLE1 model_cbv_table;
 	model_cbv_table.NumDescriptorRanges = 1;
@@ -837,8 +843,12 @@ void cleanup_device()
 	safe_release(dsv_resource);
 	safe_release(vs_blob);
 	safe_release(ps_blob);
-	safe_release(triangle.vertex_default_resource);
-	safe_release(triangle.vertex_upload_resource);
+
+	for (int i = 0; _countof(triangles); ++i)
+	{
+		safe_release(triangles[i].vertex_default_resource);
+		safe_release(triangles[i].vertex_upload_resource);
+	}
 
 	for (int i = 0; i < _countof(g_main_rt_resources); ++i)
 	{
@@ -865,6 +875,10 @@ size_t align_up(size_t value, size_t alignment)
 
 extern "C" __declspec(dllexport) bool update_and_render()
 {
+	frame_context* frame_ctx = WaitForNextFrameResources();
+	frame_ctx->cmd_alloc->Reset();
+	g_cmd_list->Reset(frame_ctx->cmd_alloc, NULL);
+
 	ImGui_ImplDX12_NewFrame();
 	ImGui_ImplWin32_NewFrame();
 	ImGui::NewFrame();
@@ -877,14 +891,12 @@ extern "C" __declspec(dllexport) bool update_and_render()
 	clear_color.z = 1.0f;
 	clear_color.w = 0.0f;
 
-	int num_triangles = 0;
+
 	if (show_demo_window) ImGui::ShowDemoWindow(&show_demo_window);
 
 	{
 		ImGuiContext* imguictx = ImGui::GetCurrentContext();
 		ImGui::SetCurrentContext(imguictx);
-
-
 		ImGui::Checkbox("Demo Window", &show_demo_window);
 		ImGui::Checkbox("VSync", &is_vsync);
 		ImGui::ColorEdit3("clear color", (float*)&clear_color, 0);
@@ -902,16 +914,14 @@ extern "C" __declspec(dllexport) bool update_and_render()
 			(double)(1000.0f / ImGui::GetIO().Framerate),
 			(double)ImGui::GetIO().Framerate);
 
-		if (ImGui::InputInt("Add triangle(s)", &num_triangles)) { }
+		if (ImGui::InputInt("Add triangle(s)", &total_tris_torender)) {
+			num_missing_tris = total_tris_torender - num_tris_rendered;
+		}
 	}
 
 	//update 
 
 	//render
-	frame_context* frame_ctx = WaitForNextFrameResources();
-
-	frame_ctx->cmd_alloc->Reset();
-	g_cmd_list->Reset(frame_ctx->cmd_alloc, NULL);
 
 	D3D12_RECT rect;
 	rect.left = 0;
@@ -942,47 +952,119 @@ extern "C" __declspec(dllexport) bool update_and_render()
 	g_cmd_list->OMSetRenderTargets(1, &g_rtv_descriptors[backbuffer_index], FALSE, &dsv_heap->GetCPUDescriptorHandleForHeapStart());
 	g_cmd_list->SetDescriptorHeaps(1, &cbv_srv_uav_heap);
 
+	g_cmd_list->SetGraphicsRootSignature(g_rootsig);
+	g_cmd_list->SetPipelineState(g_pso);
+	g_cmd_list->IASetPrimitiveTopology(D3D12_PRIMITIVE_TOPOLOGY::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	//render triangle
 	if (should_render_triangle)
 	{
-		if (!is_triangle_created) {
-			create_triangle(g_cmd_list);
+		if (num_missing_tris > 0) {
+			for (size_t i = num_tris_rendered; num_missing_tris > 0; ++i)
+			{
+				// committed resource per triangle
+				position_color vertices[triangle_vertices_count] =
+				{
+					 { { 0.0f , 0.25f, 0.0f, 1.0f} , {1.0f , 0.0f, 0.0f, 1.0f}} ,
+					 { { 0.25f , -0.25f , 0.0f, 1.0f} , {0.0f , 1.0f, 0.0f, 1.0f}} ,
+					 { {  -0.25f , -0.25f , 0.0f, 1.0f} , {0.0f , 0.0f, 1.0f, 1.f}} ,
+				};
 
-			UINT model_cb_size = (UINT)align_up(sizeof(model_cb), D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+				size_t stride = sizeof(position_color);
+				size_t vertex_buffer_byte_size = stride * _countof(vertices);
 
-			hr = g_device->CreateCommittedResource(
-				&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE::D3D12_HEAP_TYPE_UPLOAD),
-				D3D12_HEAP_FLAGS::D3D12_HEAP_FLAG_NONE,
-				&CD3DX12_RESOURCE_DESC::Buffer(model_cb_size),
-				D3D12_RESOURCE_STATES::D3D12_RESOURCE_STATE_GENERIC_READ,
-				nullptr, __uuidof(ID3D12Resource), (void**)&frame_ctx->model_cb_resource);
-			ASSERT(SUCCEEDED(hr));
+				hr = g_device->CreateCommittedResource(
+					&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE::D3D12_HEAP_TYPE_DEFAULT),
+					D3D12_HEAP_FLAGS::D3D12_HEAP_FLAG_NONE,
+					&CD3DX12_RESOURCE_DESC::Buffer(vertex_buffer_byte_size),
+					D3D12_RESOURCE_STATES::D3D12_RESOURCE_STATE_COPY_DEST,
+					NULL,
+					__uuidof(ID3D12Resource),
+					(void**)&triangles[i].vertex_default_resource);
+				ASSERT(SUCCEEDED(hr));
+				triangles[i].vertex_default_resource->SetName(L"vertex_default_resource");
 
-			D3D12_RANGE range = { 0,0 };
-			hr = frame_ctx->model_cb_resource->Map(0, &range, (void**)&frame_ctx->cpu_mapped_model_cb);
-			ASSERT(SUCCEEDED(hr));
+				hr = g_device->CreateCommittedResource(
+					&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE::D3D12_HEAP_TYPE_UPLOAD),
+					D3D12_HEAP_FLAGS::D3D12_HEAP_FLAG_NONE,
+					&CD3DX12_RESOURCE_DESC::Buffer(vertex_buffer_byte_size),
+					D3D12_RESOURCE_STATES::D3D12_RESOURCE_STATE_GENERIC_READ,
+					NULL,
+					__uuidof(ID3D12Resource),
+					(void**)&triangles[i].vertex_upload_resource);
+				ASSERT(SUCCEEDED(hr));
+				triangles[i].vertex_upload_resource->SetName(L"vertex_upload_resource");
 
-			DirectX::XMMATRIX world = DirectX::XMMatrixIdentity();
-			world = DirectX::XMMatrixScaling(3.0f, 1.0f, 1.0f);
+				BYTE* mapped_vertex_data = NULL;
+				D3D12_RANGE range = {};
+				triangles[i].vertex_upload_resource->Map(0, &range, (void**)&mapped_vertex_data);
+				memcpy((void*)mapped_vertex_data,
+					(void*)vertices,
+					vertex_buffer_byte_size);
 
-			memcpy((void*)frame_ctx->cpu_mapped_model_cb, (void*)&world, sizeof(DirectX::XMMATRIX));
-			frame_ctx->model_cb_resource->Unmap(0, &range);
+				triangles[i].vertex_upload_resource->Unmap(0, &range);
 
-			D3D12_CONSTANT_BUFFER_VIEW_DESC cbv_model_desc;
-			cbv_model_desc.BufferLocation = frame_ctx->model_cb_resource->GetGPUVirtualAddress();
-			cbv_model_desc.SizeInBytes = model_cb_size;
-			//UINT srv_desc_handle_incr_size = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE::D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-			g_device->CreateConstantBufferView(&cbv_model_desc, cbv_srv_uav_heap->GetCPUDescriptorHandleForHeapStart());
+				g_cmd_list->CopyBufferRegion(
+					triangles[i].vertex_default_resource, 0,
+					triangles[i].vertex_upload_resource, 0,
+					vertex_buffer_byte_size);
 
-			is_triangle_created = true;
+				triangles[i].vbv.BufferLocation = triangles[i].vertex_default_resource->GetGPUVirtualAddress();
+				triangles[i].vbv.SizeInBytes = (UINT)vertex_buffer_byte_size;
+				triangles[i].vbv.StrideInBytes = (UINT)stride;
+
+				g_cmd_list->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+					triangles[i].vertex_default_resource,
+					D3D12_RESOURCE_STATES::D3D12_RESOURCE_STATE_COPY_DEST,
+					D3D12_RESOURCE_STATES::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER));
+
+				// create CBVs
+
+				UINT model_cb_size = (UINT)align_up(sizeof(model_cb), D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+
+				hr = g_device->CreateCommittedResource(
+					&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE::D3D12_HEAP_TYPE_UPLOAD),
+					D3D12_HEAP_FLAGS::D3D12_HEAP_FLAG_NONE,
+					&CD3DX12_RESOURCE_DESC::Buffer(model_cb_size),
+					D3D12_RESOURCE_STATES::D3D12_RESOURCE_STATE_GENERIC_READ,
+					nullptr, __uuidof(ID3D12Resource), (void**)&triangles[i].model_cb_resource);
+				ASSERT(SUCCEEDED(hr));
+
+				range = { 0,0 };
+				hr = triangles[i].model_cb_resource->Map(0, &range, (void**)&triangles[i].cpu_mapped_model_cb);
+				ASSERT(SUCCEEDED(hr));
+
+				using namespace DirectX;
+
+				XMMATRIX scale = XMMatrixScaling(1.0f, 1.0f, 1.0f);
+				float off = i * 0.1f;
+				XMMATRIX translation = XMMatrixTranslation(off, 0.0f, 0.0f);
+				XMMATRIX t_world = XMMatrixTranspose(translation * scale);
+
+				memcpy((void*)triangles[i].cpu_mapped_model_cb, (void*)&t_world, sizeof(DirectX::XMMATRIX));
+				triangles[i].model_cb_resource->Unmap(0, &range);
+
+				D3D12_CPU_DESCRIPTOR_HANDLE handle = {};
+				handle.ptr = cbv_srv_uav_heap->GetCPUDescriptorHandleForHeapStart().ptr + (i * srv_desc_handle_incr_size);
+
+				D3D12_CONSTANT_BUFFER_VIEW_DESC cbv_model_desc;
+				cbv_model_desc.BufferLocation = triangles[i].model_cb_resource->GetGPUVirtualAddress();
+				cbv_model_desc.SizeInBytes = model_cb_size;
+				g_device->CreateConstantBufferView(&cbv_model_desc, handle);
+
+				num_tris_rendered++;
+				num_missing_tris--;
+			}
 		}
 
-		g_cmd_list->SetGraphicsRootSignature(g_rootsig);
-		g_cmd_list->SetGraphicsRootDescriptorTable(1, cbv_srv_uav_heap->GetGPUDescriptorHandleForHeapStart());
-		g_cmd_list->SetPipelineState(g_pso);
-		g_cmd_list->IASetPrimitiveTopology(D3D12_PRIMITIVE_TOPOLOGY::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-		g_cmd_list->IASetVertexBuffers(0, 1, &triangle.vbv);
-		g_cmd_list->DrawInstanced(3, 1, 0, 0);
+		for (size_t i = 0; i < total_tris_torender; ++i)
+		{
+			D3D12_GPU_DESCRIPTOR_HANDLE handle = {};
+			handle.ptr = cbv_srv_uav_heap->GetGPUDescriptorHandleForHeapStart().ptr + (i * srv_desc_handle_incr_size);
+			g_cmd_list->SetGraphicsRootDescriptorTable(1, handle);
+			g_cmd_list->IASetVertexBuffers(0, 1, &triangles[i].vbv);
+			g_cmd_list->DrawInstanced(3, 1, 0, 0);
+		}
+
 	}
 
 	UINT buffer_start = backbuffer_index * 2;
