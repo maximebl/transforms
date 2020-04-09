@@ -1,8 +1,8 @@
 //IA
 struct VertexPosColor
 {
-    float4 Position : POSITION;
-    float4 Color : COLOR;
+    float2 Position : POSITION;
+    float3 Color : COLOR;
 };
 
 struct VertexShaderOutput
@@ -38,10 +38,9 @@ VertexShaderOutput VS(VertexPosColor IN, uint instanceID : SV_InstanceID)
 {
     VertexShaderOutput OUT;
 
-    float3 newpos = IN.Position.xyz * (instanceID + 1);
-    IN.Position.xyz = newpos;
-    OUT.Position = mul(IN.Position, cb_model.model);
-    OUT.Color = IN.Color;
+    float4 Hpos = float4(IN.Position.xy * (instanceID + 1), 0.0f, 1.0f);
+    OUT.Position = mul(Hpos, cb_model.model);
+    OUT.Color = float4(IN.Color, 1.0f);
     return OUT;
 }
 

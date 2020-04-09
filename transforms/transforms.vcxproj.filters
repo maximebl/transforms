@@ -35,5 +35,6 @@
   </ItemGroup>
   <ItemGroup>
     <FxCompile Include="default_shader.hlsl" />
+    <FxCompile Include="quad.hlsl" />
   </ItemGroup>
 </Project>
