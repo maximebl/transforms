@@ -11,16 +11,12 @@ struct VertexShaderOutput
     float4 Position : SV_Position;
 };
 
-//Bindings
-
-// Method 1
 struct model_to_proj
 {
     matrix model_to_projection;
 };
 ConstantBuffer<model_to_proj> cb_modelproj : register(b0);
 
-// Method 2
 struct model
 {
     matrix model;

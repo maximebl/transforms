@@ -21,3 +21,4 @@
 #include <DirectXMath.h>
 #include "rtm/math.h"
 #include "HandmadeMath.h"
+#include "DirectXCollision.h"

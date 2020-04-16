@@ -88,7 +88,7 @@
       <PrecompiledHeader>Create</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>_DEBUG;TRANSFORMS_EXPORTS;_WINDOWS;_USRDLL;DX12_ENABLE_DEBUG_LAYER;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>TRANSFORMS_EXPORTS;_CRT_SECURE_NO_WARNINGS;_WINDOWS;_USRDLL;_DEBUG;DX12_ENABLE_DEBUG_LAYER;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <MultiProcessorCompilation>false</MultiProcessorCompilation>
@@ -173,6 +173,9 @@
   </ItemGroup>
   <ItemGroup>
     <FxCompile Include="default_shader.hlsl">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
+    </FxCompile>
+    <FxCompile Include="outline.hlsl">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
     </FxCompile>
     <FxCompile Include="quad.hlsl">
