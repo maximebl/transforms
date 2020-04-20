@@ -167,7 +167,7 @@ UINT64 local_budget;
 UINT64 nonlocal_usage;
 UINT64 nonlocal_budget;
 
-static bool is_vsync = true;
+static bool is_vsync = false;
 bool show_demo_window = true;
 
 // benchmarking
