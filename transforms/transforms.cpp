@@ -1,78 +1,16 @@
 #include "pch.h"
+//it's important to include imgui.h before imgui_impl_dx12 and imgui_impl_win32
+#include "../imgui/imgui.h"
 #include "../imgui/imgui_impl_dx12.h"
 #include "../imgui/imgui_impl_win32.h"
+#include "../common/common.h"
+#include "../common/gpu_query.h"
 
 #ifdef DX12_ENABLE_DEBUG_LAYER
 #include <dxgidebug.h>
 #endif
 
-#pragma comment(lib, "d3d12")
-#pragma comment(lib, "dxgi")
-#pragma comment(lib, "dxguid")
-#pragma comment(lib, "d3dcompiler")
-#pragma comment(lib, "user32")
-
 using namespace DirectX;
-
-#define safe_release(p)     \
-    do                      \
-    {                       \
-        if (p)              \
-        {                   \
-            (p)->Release(); \
-            (p) = NULL;     \
-        }                   \
-    } while ((void)0, 0)
-
-void failed_assert(const char *file, int line, const char *statement);
-
-#define ASSERT(b) \
-    if (!(b))     \
-    failed_assert(__FILE__, __LINE__, #b)
-
-void failed_assert(const char *file, int line, const char *statement)
-{
-    static bool debug = true;
-
-    if (debug)
-    {
-        wchar_t str[1024];
-        wchar_t message[1024];
-        wchar_t wfile[1024];
-        mbstowcs_s(NULL, message, statement, 1024);
-        mbstowcs_s(NULL, wfile, file, 1024);
-        wsprintfW(str, L"Failed: (%s)\n\nFile: %s\nLine: %d\n\n", message, wfile, line);
-
-        if (IsDebuggerPresent())
-        {
-            wcscat_s(str, 1024, L"Debug?");
-            int res = MessageBoxW(NULL, str, L"Assert failed", MB_YESNOCANCEL | MB_ICONERROR);
-            if (res == IDYES)
-            {
-                __debugbreak();
-            }
-            else if (res == IDCANCEL)
-            {
-                debug = false;
-            }
-        }
-        else
-        {
-            wcscat_s(str, 1024, L"Display more asserts?");
-            if (MessageBoxW(NULL, str, L"Assert failed", MB_YESNO | MB_ICONERROR | MB_DEFBUTTON2) != IDYES)
-            {
-                debug = false;
-            }
-        }
-    }
-}
-
-void wait_duration(DWORD duration)
-{
-    HANDLE event_handle = CreateEventExW(nullptr, L"wait", 0, EVENT_ALL_ACCESS);
-    WaitForSingleObject(event_handle, duration);
-    CloseHandle(event_handle);
-}
 
 size_t align_up(size_t value, size_t alignment)
 {
@@ -103,15 +41,11 @@ BYTE *cpu_mapped_packed;
 ID3D12Resource *packed_default_resource;
 size_t aligned_packed_uploadheap_size;
 
-HRESULT hr;
 #define IDT_TIMER1 1
 #define NUM_BACK_BUFFERS 3
 UINT backbuffer_index = 0; // gets updated after each call to Present()
 UINT next_backbuffer_index = 0;
 UINT srv_desc_handle_incr_size = 0;
-static HWND *g_hwnd;
-static UINT64 hwnd_width;
-static UINT hwnd_height;
 static XMFLOAT2 mouse_pos;
 static XMFLOAT2 ndc_mouse_pos;
 static struct frame_context g_frame_context[NUM_BACK_BUFFERS];
@@ -153,10 +87,15 @@ BYTE *cpu_map_prealloc_modelcb = NULL;
 static ID3D12Resource *preallocated_modelcb_resource = NULL;
 bool is_resource_created = false;
 
+static gpu_query *queries;
 static UINT64 *timestamp_buffer = NULL;
-static ID3D12Resource *rb_buffer;
+static ID3D12Resource *query_rb_buffer;
 static ID3D12QueryHeap *query_heap;
-static double frame_time = 0.0;
+static double frame_gpu_time = 0.0;
+static double imgui_gpu_time = 0.0;
+static double triangle_gpu_time = 0.0;
+static double quads_and_tri_gpu_time = 0.0;
+static double quads_gpu_time = 0.0;
 static UINT total_timer_count = 6;
 static UINT ui_timer_count = 6;
 UINT stats_counter = 0;
@@ -190,10 +129,10 @@ double delta_times[BUFFERED_FRAME_STATS];
 double delta_time_avg = 0;
 
 extern "C" __declspec(dllexport) bool update_and_render();
-extern "C" __declspec(dllexport) void resize(HWND hWnd, int width, int height);
+extern "C" __declspec(dllexport) void resize(int width, int height);
 extern "C" __declspec(dllexport) void cleanup();
-extern "C" __declspec(dllexport) void wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
-extern "C" __declspec(dllexport) bool initialize(HWND *hwnd);
+extern "C" __declspec(dllexport) void wndproc(UINT msg, WPARAM wParam, LPARAM lParam);
+extern "C" __declspec(dllexport) bool initialize();
 
 // triangle creation
 #define triangle_vertices_count 3
@@ -241,7 +180,6 @@ enum cbv_creation_options
     committed_resource_per_frame = 1,
     committed_resource_multiple_cbv = 2,
 };
-
 cbv_creation_options cbv_creation_option;
 
 int total_tris_torender = 0;
@@ -272,37 +210,24 @@ void create_quads(int count);
 
 // synchronization
 void WaitForLastSubmittedFrame();
-frame_context *WaitForNextFrameResources(void);
+frame_context *WaitForNextFrameResources();
 void cpu_wait(UINT64 fence_value);
 
-#define directxmath
-
-extern "C" __declspec(dllexport) bool initialize(HWND *hwnd)
+extern "C" __declspec(dllexport) bool initialize()
 {
-    g_hwnd = hwnd;
-
-#ifdef directxmath
     if (!XMVerifyCPUSupport())
         return false;
-#endif
-
-    RECT rect;
-    if (GetClientRect(*g_hwnd, &rect))
-    {
-        hwnd_width = rect.right - rect.left;
-        hwnd_height = rect.bottom - rect.top;
-    }
 
     if (!create_device())
     {
         cleanup_device();
-        return true;
+        return false;
     }
 
     ImGui::CreateContext();
     ImGuiIO io = ImGui::GetIO();
     ImGui::StyleColorsDark();
-    ImGui_ImplWin32_Init(*hwnd);
+    ImGui_ImplWin32_Init(g_hwnd);
 
     D3D12_CPU_DESCRIPTOR_HANDLE srv_cpu_handle = imgui_srv_heap->GetCPUDescriptorHandleForHeapStart();
     D3D12_GPU_DESCRIPTOR_HANDLE srv_gpu_handle = imgui_srv_heap->GetGPUDescriptorHandleForHeapStart();
@@ -322,18 +247,20 @@ extern "C" __declspec(dllexport) bool initialize(HWND *hwnd)
     QueryPerformanceFrequency(&tmp_cpu_frequency);
     g_cpu_frequency = (double)tmp_cpu_frequency.QuadPart;
 
-    SetTimer(*hwnd, IDT_TIMER1, 5000, NULL);
+    SetTimer(g_hwnd, IDT_TIMER1, 5000, NULL);
+    queries = new gpu_query(g_device, g_cmd_list, g_cmd_queue, &backbuffer_index, 5);
 
     compile_shader(L"..\\..\\transforms\\outline.hlsl", &outline_vs_blob, &outline_ps_blob);
     compile_shader(L"..\\..\\transforms\\default_shader.hlsl", &tri_vs_blob, &tri_ps_blob);
     compile_shader(L"..\\..\\transforms\\quad.hlsl", &quad_vs_blob, &quad_ps_blob);
     init_pipeline();
+
     return true;
 }
 
 extern "C" __declspec(dllexport) void cleanup(void)
 {
-    KillTimer(*g_hwnd, IDT_TIMER1);
+    KillTimer(g_hwnd, IDT_TIMER1);
     cpu_wait(g_fence_last_signaled_value);
     ImGui_ImplDX12_Shutdown();
     ImGui_ImplWin32_Shutdown();
@@ -352,9 +279,9 @@ void frame_time_statistics()
     memset(&delta_times, 0, stats_counter);
 }
 
-extern "C" __declspec(dllexport) void wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+extern "C" __declspec(dllexport) void wndproc(UINT msg, WPARAM wParam, LPARAM lParam)
 {
-    ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
+    ImGui_ImplWin32_WndProcHandler(g_hwnd, msg, wParam, lParam);
 
     switch (msg)
     {
@@ -536,7 +463,7 @@ bool create_device()
     IDXGISwapChain1 *swap_chain = NULL;
     hr = dxgi_factory->CreateSwapChainForHwnd(
         (IUnknown *)g_cmd_queue,
-        *g_hwnd,
+        g_hwnd,
         &sd,
         NULL,
         NULL,
@@ -583,7 +510,7 @@ bool create_device()
     packed_default_resource->SetName(L"packed_default_resource");
 
     create_rendertarget();
-    create_dsv(hwnd_width, hwnd_height);
+    create_dsv(g_hwnd_width, g_hwnd_height);
     create_query_objects();
 
     srv_desc_handle_incr_size = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE::D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -899,10 +826,10 @@ void create_query_objects()
         &CD3DX12_RESOURCE_DESC::Buffer(sizeof(UINT64) * total_timer_count),
         D3D12_RESOURCE_STATES::D3D12_RESOURCE_STATE_COPY_DEST, NULL,
         __uuidof(ID3D12Resource),
-        (void **)&rb_buffer);
+        (void **)&query_rb_buffer);
 
     ASSERT(SUCCEEDED(hr));
-    rb_buffer->SetName(L"queries_rb_resource");
+    query_rb_buffer->SetName(L"queries_rb_resource");
 }
 
 void compile_shader(const wchar_t *file, ID3DBlob **vs_blob, ID3DBlob **ps_blob)
@@ -1007,7 +934,7 @@ void create_quads(int count)
                              sizeof(WORD), _countof(indices), indices, i);
 
         quads[i].cb_index = (max_quads - i) - 1;
-        append_cb_toheap(quads[i].cb_index, quads[i].cb_index);
+        append_cb_toheap((int)quads[i].cb_index, quads[i].cb_index);
 
         XMMATRIX scale = XMMatrixScaling(0.4f, 0.4f, 0.4f);
         XMMATRIX translation = XMMatrixTranslation(0.f, (float)i * 1.f, 0.f);
@@ -1176,8 +1103,8 @@ extern "C" __declspec(dllexport) bool update_and_render()
 {
     mouse_pos.x = ImGui::GetMousePos().x;
     mouse_pos.y = ImGui::GetMousePos().y;
-    ndc_mouse_pos.x = (2.f * mouse_pos.x / hwnd_width) - 1.f;
-    ndc_mouse_pos.y = -(2.f * mouse_pos.y / hwnd_height) + 1.f;
+    ndc_mouse_pos.x = (2.f * mouse_pos.x / g_hwnd_width) - 1.f;
+    ndc_mouse_pos.y = -(2.f * mouse_pos.y / g_hwnd_height) + 1.f;
 
     frame_context *frame_ctx = WaitForNextFrameResources();
     frame_ctx->cmd_alloc->Reset();
@@ -1203,6 +1130,34 @@ extern "C" __declspec(dllexport) bool update_and_render()
     }
 
     {
+        // select demo to show
+        const char *demo_str[] = {"2D Transforms",
+                                  "3D Transforms",
+                                  "Particles"};
+        static const char *current_demo = demo_str[0];
+        if (ImGui::BeginCombo("Demo to show", current_demo))
+        {
+            for (int i = 0; i < _countof(demo_str); ++i)
+            {
+                bool is_selected = (current_demo == demo_str[i]);
+                if (ImGui::Selectable(demo_str[i], is_selected))
+                {
+                    current_demo = demo_str[i];
+                    demo_to_show = (demos)i;
+                    if (!is_selected)
+                    {
+                        demo_changed = true;
+                    }
+                }
+
+                if (is_selected)
+                {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+        }
+
         // Mouse coordinates
         ImGui::Columns(3, "mouse_coords");
         ImGui::Separator();
@@ -1235,8 +1190,20 @@ extern "C" __declspec(dllexport) bool update_and_render()
         ImGui::Checkbox("Demo Window", &show_demo_window);
         ImGui::Checkbox("VSync", &is_vsync);
 
+        ImGui::Text("frame gpu time %.4f ms/frame",
+                    frame_gpu_time);
+
         ImGui::Text("imgui gpu time %.4f ms/frame",
-                    frame_time);
+                    imgui_gpu_time);
+
+        ImGui::Text("triangles gpu time %.4f ms/frame",
+                    triangle_gpu_time);
+
+        ImGui::Text("quads gpu time %.4f ms/frame",
+                    quads_gpu_time);
+
+        ImGui::Text("quads and triangles gpu time %.4f ms/frame",
+                    quads_and_tri_gpu_time);
 
         ImGui::Text("elapsed time %.4f ms/frame",
                     delta_time.elapsed_ms);
@@ -1269,15 +1236,15 @@ extern "C" __declspec(dllexport) bool update_and_render()
         const char *cbv_creation_str[] = {"Committed resource per CBV",
                                           "Committed resource per frame",
                                           "Multiple CBVs per committed resource"};
-        static const char *current_option = cbv_creation_str[0];
-        if (ImGui::BeginCombo("CBV creation options", current_option))
+        static const char *current_technique = cbv_creation_str[0];
+        if (ImGui::BeginCombo("CBV creation options", current_technique))
         {
             for (int i = 0; i < _countof(cbv_creation_str); ++i)
             {
-                bool is_selected = (current_option == cbv_creation_str[i]);
+                bool is_selected = (current_technique == cbv_creation_str[i]);
                 if (ImGui::Selectable(cbv_creation_str[i], is_selected))
                 {
-                    current_option = cbv_creation_str[i];
+                    current_technique = cbv_creation_str[i];
                     cbv_creation_option = (cbv_creation_options)i;
                 }
 
@@ -1289,7 +1256,7 @@ extern "C" __declspec(dllexport) bool update_and_render()
 
         if (ImGui::InputInt("Triangle(s)", &total_tris_torender_input))
         {
-            if (total_tris_torender_input > 0 && total_tris_torender_input <= max_tris)
+            if (total_tris_torender_input >= 0 && total_tris_torender_input <= max_tris)
             {
                 total_tris_torender = total_tris_torender_input;
                 num_missing_tris = total_tris_torender - num_tris_rendered;
@@ -1297,7 +1264,7 @@ extern "C" __declspec(dllexport) bool update_and_render()
         }
         ImGui::SameLine();
         char buf_tricount[50];
-        sprintf(buf_tricount, "%d / %d", triangles.size(), max_tris);
+        sprintf(buf_tricount, "%lld / %d", triangles.size(), max_tris);
         ImGui::Text(buf_tricount);
 
         if (ImGui::InputInt("Instance count", &tri_instance_count))
@@ -1319,24 +1286,26 @@ extern "C" __declspec(dllexport) bool update_and_render()
         }
         ImGui::SameLine();
         char buf_handlecount[50];
-        sprintf(buf_handlecount, "%d / %d", quads.size(), max_quads);
+        sprintf(buf_handlecount, "%lld / %d", quads.size(), max_quads);
         ImGui::Text(buf_handlecount);
     }
 
     //render
 
+    queries->start_query("frame_rendering");
+
     D3D12_RECT rect;
     rect.left = 0;
     rect.top = 0;
-    rect.right = (LONG)hwnd_width;
-    rect.bottom = (LONG)hwnd_height;
+    rect.right = (LONG)g_hwnd_width;
+    rect.bottom = (LONG)g_hwnd_height;
     g_cmd_list->RSSetScissorRects(1, &rect);
 
     D3D12_VIEWPORT vp;
     vp.TopLeftY = 0;
     vp.TopLeftX = 0;
-    vp.Width = (float)hwnd_width;
-    vp.Height = (float)hwnd_height;
+    vp.Width = (float)g_hwnd_width;
+    vp.Height = (float)g_hwnd_height;
     vp.MaxDepth = 1.0f;
     vp.MinDepth = 0.0f;
     g_cmd_list->RSSetViewports(1, &vp);
@@ -1462,6 +1431,8 @@ extern "C" __declspec(dllexport) bool update_and_render()
         }
     }
 
+    queries->start_query("triangle_rendering");
+    queries->start_query("quads_and_tri");
     // draw triangles
     for (int i = 0; i < total_tris_torender; ++i)
     {
@@ -1473,7 +1444,9 @@ extern "C" __declspec(dllexport) bool update_and_render()
         g_cmd_list->IASetVertexBuffers(0, 1, &triangles[i].vbv);
         g_cmd_list->DrawInstanced(3, tri_instance_count, 0, 0);
     }
+    queries->end_query("triangle_rendering");
 
+    queries->start_query("quads_rendering");
     // draw quads
     for (int i = 0; i < quads.size(); i++)
     {
@@ -1499,17 +1472,18 @@ extern "C" __declspec(dllexport) bool update_and_render()
         g_cmd_list->SetPipelineState(quad_pso);
         g_cmd_list->DrawIndexedInstanced(6, 1, 0, 0, 0);
     }
+    queries->end_query("quads_and_tri");
+    queries->end_query("quads_rendering");
 
-    UINT buffer_start = backbuffer_index * 2;
-    UINT buffer_end = (backbuffer_index * 2 + 1);
-    g_cmd_list->EndQuery(query_heap, D3D12_QUERY_TYPE::D3D12_QUERY_TYPE_TIMESTAMP, buffer_start);
+    queries->start_query("ui_rendering");
 
     g_cmd_list->SetDescriptorHeaps(1, &imgui_srv_heap);
     ImGui::Render(); //render ui
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), g_cmd_list);
 
-    g_cmd_list->EndQuery(query_heap, D3D12_QUERY_TYPE::D3D12_QUERY_TYPE_TIMESTAMP, buffer_end);
-    g_cmd_list->ResolveQueryData(query_heap, D3D12_QUERY_TYPE::D3D12_QUERY_TYPE_TIMESTAMP, 0, ui_timer_count, rb_buffer, 0);
+    queries->end_query("ui_rendering");
+    queries->end_query("frame_rendering");
+    queries->resolve();
 
     g_cmd_list->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
                                        g_main_rt_resources[backbuffer_index],
@@ -1520,18 +1494,11 @@ extern "C" __declspec(dllexport) bool update_and_render()
     g_cmd_queue->ExecuteCommandLists((UINT)cmd_lists.size(), (ID3D12CommandList *const *)cmd_lists.data());
     cmd_lists.clear();
 
-    D3D12_RANGE rb_range;
-    rb_range.Begin = buffer_start * sizeof(UINT64);
-    rb_range.End = buffer_end * sizeof(UINT64);
-    hr = rb_buffer->Map(0, &rb_range, (void **)&timestamp_buffer);
-    ASSERT(SUCCEEDED(hr));
-
-    UINT64 time_delta = timestamp_buffer[buffer_end] - timestamp_buffer[buffer_start];
-    frame_time = ((double)time_delta / g_gpu_frequency) * 1000.0; // convert from gpu ticks to milliseconds
-
-    rb_range = {};
-    rb_buffer->Unmap(0, &rb_range);
-    timestamp_buffer = NULL;
+    imgui_gpu_time = queries->query_result("ui_rendering");
+    triangle_gpu_time = queries->query_result("triangle_rendering");
+    quads_and_tri_gpu_time = queries->query_result("quads_and_tri");
+    quads_gpu_time = queries->query_result("quads_rendering");
+    frame_gpu_time = queries->query_result("frame_rendering");
 
     UINT sync_interval = is_vsync ? 1 : 0;
     UINT present_flags = is_vsync ? 0 : DXGI_PRESENT_ALLOW_TEARING;
@@ -1563,16 +1530,16 @@ extern "C" __declspec(dllexport) bool update_and_render()
     return true;
 }
 
-extern "C" __declspec(dllexport) void resize(HWND hWnd, int width, int height)
+extern "C" __declspec(dllexport) void resize(int width, int height)
 {
-    hwnd_width = width;
-    hwnd_height = height;
+    g_hwnd_width = width;
+    g_hwnd_height = height;
 
     ImGui_ImplDX12_InvalidateDeviceObjects();
     cleanup_rendertarget();
     safe_release(dsv_resource);
 
-    resize_swapchain(hWnd, width, height);
+    resize_swapchain(g_hwnd, width, height);
     create_dsv(width, height);
     create_rendertarget();
     ImGui_ImplDX12_CreateDeviceObjects();
@@ -1580,6 +1547,7 @@ extern "C" __declspec(dllexport) void resize(HWND hWnd, int width, int height)
 
 void cleanup_device()
 {
+    delete queries;
     cleanup_rendertarget();
 
     if (g_hswapchain_waitableobject != NULL)
@@ -1621,7 +1589,7 @@ void cleanup_device()
     safe_release(cbv_srv_uav_heap);
     safe_release(dsv_heap);
     safe_release(g_fence);
-    safe_release(rb_buffer);
+    safe_release(query_rb_buffer);
     safe_release(query_heap);
     safe_release(g_pso);
     safe_release(quad_pso);

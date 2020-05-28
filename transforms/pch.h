@@ -7,18 +7,15 @@
 #include <float.h>
 #include <vector>
 
-#include "../imgui/imgui.h"
 #include "PathCch.h"
 #include <d3dcompiler.h>
 #include <dxgiformat.h>
 #include <dxgi1_6.h>
 #include <d3d12.h>
 #include <Xinput.h>
-#include "d3dx12.h"
+#include "../common/d3dx12.h"
 #include <DirectXColors.h>
 
 // math libs
 #include <DirectXMath.h>
-#include "rtm/math.h"
-#include "HandmadeMath.h"
 #include "DirectXCollision.h"
