@@ -64,7 +64,7 @@ void gpu_query::end_query(const char *query_name)
     m_cmd_list->EndQuery(m_query_heap, D3D12_QUERY_TYPE_TIMESTAMP, buffer_end);
 }
 
-double gpu_query::query_result(const char *query_name)
+double gpu_query::result(const char *query_name)
 {
     UINT buffer_start = m_queries[query_name].buffer_start;
     UINT buffer_end = m_queries[query_name].buffer_end;

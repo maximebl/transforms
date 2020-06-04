@@ -5,17 +5,13 @@
 #include "../imgui/imgui_impl_win32.h"
 #include "../common/common.h"
 #include "../common/gpu_query.h"
+#include "../common/imgui_helpers.h"
 
 #ifdef DX12_ENABLE_DEBUG_LAYER
 #include <dxgidebug.h>
 #endif
 
 using namespace DirectX;
-
-size_t align_up(size_t value, size_t alignment)
-{
-    return ((value + (alignment - 1)) & ~(alignment - 1));
-}
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -35,14 +31,12 @@ struct frame_context
     BYTE *cpu_mapped_model_cb;
 };
 
-// packed data method
 ID3D12Resource *packed_uploader;
 BYTE *cpu_mapped_packed;
 ID3D12Resource *packed_default_resource;
 size_t aligned_packed_uploadheap_size;
 
 #define IDT_TIMER1 1
-#define NUM_BACK_BUFFERS 3
 UINT backbuffer_index = 0; // gets updated after each call to Present()
 UINT next_backbuffer_index = 0;
 UINT srv_desc_handle_incr_size = 0;
@@ -52,7 +46,6 @@ static struct frame_context g_frame_context[NUM_BACK_BUFFERS];
 static ID3D12Device *g_device = NULL;
 static IDXGIAdapter4 *adapter = NULL;
 static ID3D12DescriptorHeap *rtv_desc_heap = NULL;
-static ID3D12DescriptorHeap *imgui_srv_heap = NULL;
 static ID3D12DescriptorHeap *cbv_srv_uav_heap = NULL;
 static ID3D12DescriptorHeap *dsv_heap = NULL;
 static ID3D12CommandQueue *g_cmd_queue = NULL;
@@ -101,11 +94,6 @@ static UINT ui_timer_count = 6;
 UINT stats_counter = 0;
 void frame_time_statistics();
 
-UINT64 local_usage;
-UINT64 local_budget;
-UINT64 nonlocal_usage;
-UINT64 nonlocal_budget;
-
 static bool is_vsync = false;
 bool show_demo_window = true;
 
@@ -148,7 +136,7 @@ struct quad_vert2d
     float color[3];
 };
 
-struct mesh
+struct triangle_mesh
 {
     ID3D12Resource *vertex_default_resource = NULL;
     ID3D12Resource *vertex_upload_resource = NULL;
@@ -173,7 +161,7 @@ std::vector<quad> quads;
 #define indices_per_quad 6
 #define cb_per_quad 1
 #define vertices_per_quad 4
-std::vector<mesh> triangles;
+std::vector<triangle_mesh> triangles;
 enum cbv_creation_options
 {
     committed_resource_per_cbv = 0,
@@ -224,20 +212,7 @@ extern "C" __declspec(dllexport) bool initialize()
         return false;
     }
 
-    ImGui::CreateContext();
-    ImGuiIO io = ImGui::GetIO();
-    ImGui::StyleColorsDark();
-    ImGui_ImplWin32_Init(g_hwnd);
-
-    D3D12_CPU_DESCRIPTOR_HANDLE srv_cpu_handle = imgui_srv_heap->GetCPUDescriptorHandleForHeapStart();
-    D3D12_GPU_DESCRIPTOR_HANDLE srv_gpu_handle = imgui_srv_heap->GetGPUDescriptorHandleForHeapStart();
-
-    ImGui_ImplDX12_Init(g_device,
-                        NUM_BACK_BUFFERS,
-                        DXGI_FORMAT::DXGI_FORMAT_R8G8B8A8_UNORM,
-                        imgui_srv_heap, //unused for now
-                        srv_cpu_handle,
-                        srv_gpu_handle);
+    imgui_init(g_device);
 
     UINT64 tmp_gpu_frequency;
     g_cmd_queue->GetTimestampFrequency(&tmp_gpu_frequency);
@@ -262,9 +237,7 @@ extern "C" __declspec(dllexport) void cleanup(void)
 {
     KillTimer(g_hwnd, IDT_TIMER1);
     cpu_wait(g_fence_last_signaled_value);
-    ImGui_ImplDX12_Shutdown();
-    ImGui_ImplWin32_Shutdown();
-    ImGui::DestroyContext();
+    imgui_shutdown();
     cleanup_device();
 }
 
@@ -360,16 +333,6 @@ bool create_device()
     }
 
     {
-        D3D12_DESCRIPTOR_HEAP_DESC imgui_heap_desc;
-        imgui_heap_desc.NodeMask = 0;
-        imgui_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE::D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        imgui_heap_desc.NumDescriptors = 1;
-        imgui_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAGS::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-        hr = g_device->CreateDescriptorHeap(&imgui_heap_desc, __uuidof(ID3D12DescriptorHeap), (void **)&imgui_srv_heap);
-
-        ASSERT(SUCCEEDED(hr));
-        imgui_srv_heap->SetName(L"imgui_srv_heap");
-
         D3D12_DESCRIPTOR_HEAP_DESC main_heap_desc;
         main_heap_desc.NodeMask = 0;
         main_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE::D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
@@ -585,7 +548,7 @@ void cleanup_rendertarget()
         }
 }
 
-void init_pipeline()
+internal void init_pipeline()
 {
     ID3DBlob *rs_blob = NULL;
 
@@ -621,7 +584,6 @@ void init_pipeline()
     param_model.DescriptorTable = model_cbv_table;
     parameters[1] = param_model;
 
-    ID3DBlob *error_blob = NULL;
     // Root Signature
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC versioned_rootsig_desc;
     versioned_rootsig_desc.Version = D3D_ROOT_SIGNATURE_VERSION::D3D_ROOT_SIGNATURE_VERSION_1_1;
@@ -630,6 +592,8 @@ void init_pipeline()
     versioned_rootsig_desc.Desc_1_1.pParameters = parameters;
     versioned_rootsig_desc.Desc_1_1.NumStaticSamplers = 0;
     versioned_rootsig_desc.Desc_1_1.pStaticSamplers = NULL;
+
+    ID3DBlob *error_blob = NULL;
     hr = D3D12SerializeVersionedRootSignature(&versioned_rootsig_desc, &rs_blob, &error_blob);
     ASSERT(SUCCEEDED(hr));
 
@@ -912,6 +876,9 @@ void fill_packed_resource(
 
 void create_quads(int count)
 {
+    if (count <= 0)
+        return;
+
     hr = ui_requests_cmd_alloc->Reset();
     ASSERT(SUCCEEDED(hr));
     hr = ui_requests_cmdlist->Reset(ui_requests_cmd_alloc, nullptr);
@@ -1111,79 +1078,17 @@ extern "C" __declspec(dllexport) bool update_and_render()
     g_cmd_list->Reset(frame_ctx->cmd_alloc, NULL);
     cmd_lists.push_back(g_cmd_list);
 
-    DXGI_QUERY_VIDEO_MEMORY_INFO mem_info;
-    adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP::DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mem_info);
-    local_usage = mem_info.CurrentUsage;
-    local_budget = mem_info.Budget;
-
-    adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP::DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &mem_info);
-    nonlocal_usage = mem_info.CurrentUsage;
-    nonlocal_budget = mem_info.Budget;
-
     ImGui_ImplDX12_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
     if (show_demo_window)
-    {
         ImGui::ShowDemoWindow(&show_demo_window);
-    }
 
     {
-        // select demo to show
-        const char *demo_str[] = {"2D Transforms",
-                                  "3D Transforms",
-                                  "Particles"};
-        static const char *current_demo = demo_str[0];
-        if (ImGui::BeginCombo("Demo to show", current_demo))
-        {
-            for (int i = 0; i < _countof(demo_str); ++i)
-            {
-                bool is_selected = (current_demo == demo_str[i]);
-                if (ImGui::Selectable(demo_str[i], is_selected))
-                {
-                    current_demo = demo_str[i];
-                    demo_to_show = (demos)i;
-                    if (!is_selected)
-                    {
-                        demo_changed = true;
-                    }
-                }
-
-                if (is_selected)
-                {
-                    ImGui::SetItemDefaultFocus();
-                }
-            }
-            ImGui::EndCombo();
-        }
-
-        // Mouse coordinates
-        ImGui::Columns(3, "mouse_coords");
-        ImGui::Separator();
-        ImGui::Text("Mouse coords");
-        ImGui::NextColumn();
-        ImGui::Text("X");
-        ImGui::NextColumn();
-        ImGui::Text("Y");
-        ImGui::NextColumn();
-        ImGui::Separator();
-        ImGui::Text("Screen");
-        ImGui::Text("NDC");
-        ImGui::NextColumn();
-        char coords_buf[50];
-        sprintf(coords_buf, "%f", mouse_pos.x);
-        ImGui::Text(coords_buf); // screen space x
-        sprintf(coords_buf, "%f", ndc_mouse_pos.x);
-        ImGui::Text(coords_buf); // NDC space x
-        ImGui::NextColumn();
-        sprintf(coords_buf, "%f", mouse_pos.y);
-        ImGui::Text(coords_buf); // screen space y
-        sprintf(coords_buf, "%f", ndc_mouse_pos.y);
-        ImGui::Text(coords_buf); // NDC space y
-
-        ImGui::Columns(1);
-        ImGui::Separator();
+        imgui_appswitcher();
+        imgui_mouse_pos();
+        imgui_gpu_memory(adapter);
 
         ImGuiContext *imguictx = ImGui::GetCurrentContext();
         ImGui::SetCurrentContext(imguictx);
@@ -1215,22 +1120,6 @@ extern "C" __declspec(dllexport) bool update_and_render()
                     (double)(1000.0f / ImGui::GetIO().Framerate),
                     (double)ImGui::GetIO().Framerate);
 
-        ImGui::Separator();
-
-        ImGui::Text("Local (video) memory");
-        ImGui::Indent(10.f);
-
-        ImGui::Text("Current usage: %u", local_usage);
-        ImGui::Text("Budget: %u", local_budget);
-        ImGui::ProgressBar((float)local_usage / (float)local_budget, ImVec2(0.f, 0.f));
-        ImGui::Unindent(10.f);
-
-        ImGui::Text("Non-local (system) memory");
-        ImGui::Indent(10.f);
-        ImGui::Text("Current usage: %u", nonlocal_usage);
-        ImGui::Text("Budget: %u", nonlocal_budget);
-        ImGui::ProgressBar((float)nonlocal_usage / (float)nonlocal_budget, ImVec2(0.f, 0.f));
-        ImGui::Unindent(10.f);
         ImGui::Separator();
 
         const char *cbv_creation_str[] = {"Committed resource per CBV",
@@ -1275,7 +1164,7 @@ extern "C" __declspec(dllexport) bool update_and_render()
 
         if (ImGui::InputInt("Quad(s)", &total_quads_torender, 0, 0, 0))
         {
-            if (total_quads_torender > 0 && total_quads_torender <= max_quads)
+            if (total_quads_torender <= max_quads)
             {
                 if (!quads.empty())
                 {
@@ -1288,6 +1177,7 @@ extern "C" __declspec(dllexport) bool update_and_render()
         char buf_handlecount[50];
         sprintf(buf_handlecount, "%lld / %d", quads.size(), max_quads);
         ImGui::Text(buf_handlecount);
+
     }
 
     //render
@@ -1332,7 +1222,7 @@ extern "C" __declspec(dllexport) bool update_and_render()
     {
         for (int i = num_tris_rendered; num_missing_tris > 0; ++i)
         {
-            mesh new_tri;
+            triangle_mesh new_tri;
             triangles.push_back(new_tri);
 
             // committed resource per triangle
@@ -1394,9 +1284,11 @@ extern "C" __declspec(dllexport) bool update_and_render()
             case committed_resource_per_cbv:
                 create_cb_resource_per_cbv(i, triangles[i].cb_index);
                 break;
+
             case committed_resource_per_frame:
                 create_cb_resource_per_frame(i);
                 break;
+
             case committed_resource_multiple_cbv:
                 append_cb_toheap(i, triangles[i].cb_index);
                 XMMATRIX scale = XMMatrixScaling(0.2f, 0.2f, 0.2f);
@@ -1405,6 +1297,7 @@ extern "C" __declspec(dllexport) bool update_and_render()
                 XMMATRIX t_model = XMMatrixTranspose(model);
                 memcpy((void *)&cpu_map_prealloc_modelcb[i * model_cb_size], (void *)&t_model, sizeof(XMMATRIX));
                 break;
+
             default:
                 break;
             }
@@ -1420,7 +1313,7 @@ extern "C" __declspec(dllexport) bool update_and_render()
     {
         for (int i = 0; i < tris_to_delete; ++i)
         {
-            mesh tri_to_delete = triangles.back();
+            triangle_mesh tri_to_delete = triangles.back();
             cpu_wait(g_fence_last_signaled_value);
             safe_release(tri_to_delete.model_cb_resource);
             safe_release(tri_to_delete.vertex_default_resource);
@@ -1477,9 +1370,7 @@ extern "C" __declspec(dllexport) bool update_and_render()
 
     queries->start_query("ui_rendering");
 
-    g_cmd_list->SetDescriptorHeaps(1, &imgui_srv_heap);
-    ImGui::Render(); //render ui
-    ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), g_cmd_list);
+    imgui_render(g_cmd_list);
 
     queries->end_query("ui_rendering");
     queries->end_query("frame_rendering");
@@ -1494,11 +1385,11 @@ extern "C" __declspec(dllexport) bool update_and_render()
     g_cmd_queue->ExecuteCommandLists((UINT)cmd_lists.size(), (ID3D12CommandList *const *)cmd_lists.data());
     cmd_lists.clear();
 
-    imgui_gpu_time = queries->query_result("ui_rendering");
-    triangle_gpu_time = queries->query_result("triangle_rendering");
-    quads_and_tri_gpu_time = queries->query_result("quads_and_tri");
-    quads_gpu_time = queries->query_result("quads_rendering");
-    frame_gpu_time = queries->query_result("frame_rendering");
+    imgui_gpu_time = queries->result("ui_rendering");
+    triangle_gpu_time = queries->result("triangle_rendering");
+    quads_and_tri_gpu_time = queries->result("quads_and_tri");
+    quads_gpu_time = queries->result("quads_rendering");
+    frame_gpu_time = queries->result("frame_rendering");
 
     UINT sync_interval = is_vsync ? 1 : 0;
     UINT present_flags = is_vsync ? 0 : DXGI_PRESENT_ALLOW_TEARING;
@@ -1585,7 +1476,6 @@ void cleanup_device()
     safe_release(g_cmd_queue);
     safe_release(g_cmd_list);
     safe_release(rtv_desc_heap);
-    safe_release(imgui_srv_heap);
     safe_release(cbv_srv_uav_heap);
     safe_release(dsv_heap);
     safe_release(g_fence);

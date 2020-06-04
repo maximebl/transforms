@@ -14,7 +14,7 @@ public:
     COMMON_API void start_query(const char *query_name);
     COMMON_API void end_query(const char *query_name);
     COMMON_API void resolve();
-    COMMON_API double query_result(const char *query_name);
+    COMMON_API double result(const char *query_name);
 
 private:
     ID3D12GraphicsCommandList *m_cmd_list;
