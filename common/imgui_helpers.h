@@ -26,7 +26,7 @@ void imgui_init(ID3D12Device *device)
     D3D12_GPU_DESCRIPTOR_HANDLE srv_gpu_handle = imgui_srv_heap->GetGPUDescriptorHandleForHeapStart();
 
     ImGui_ImplDX12_Init(device,
-                        3,
+                        NUM_BACK_BUFFERS,
                         DXGI_FORMAT_R8G8B8A8_UNORM,
                         imgui_srv_heap, //unused for now
                         srv_cpu_handle,
@@ -61,7 +61,7 @@ void imgui_shutdown()
     safe_release(imgui_srv_heap);
 }
 
-void imgui_appswitcher()
+void imgui_app_combo()
 {
     const char *demo_str[] = {"2D Transforms",
                               "3D Transforms",
@@ -80,6 +80,36 @@ void imgui_appswitcher()
                 if (!is_selected)
                 {
                     demo_changed = true;
+                }
+            }
+
+            if (is_selected)
+            {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        ImGui::EndCombo();
+    }
+}
+
+void imgui_pso_combo(int* view)
+{
+    const char *view_str[] = {"Flat color",
+                              "Wireframe"};
+    int view_index = *view;
+    const char *current_view = view_str[view_index];
+    if (ImGui::BeginCombo("View", current_view))
+    {
+        for (int i = 0; i < _countof(view_str); ++i)
+        {
+            bool is_selected = (current_view == view_str[i]);
+            if (ImGui::Selectable(view_str[i], is_selected))
+            {
+                current_view = view_str[i];
+                *view = i;
+                if (!is_selected)
+                {
+                    // on changed side-effect
                 }
             }
 

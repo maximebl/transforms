@@ -2,6 +2,7 @@
 #define PCH_H
 
 #include "framework.h"
+#include <WindowsX.h>
 
 #include <assert.h>
 #include <d3d12.h>

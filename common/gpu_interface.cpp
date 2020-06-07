@@ -1,6 +1,9 @@
 #include "gpu_interface.h"
 #include <d3dcompiler.h>
 #include "PathCch.h"
+#include "assimp/Importer.hpp"
+#include "assimp/scene.h"
+#include "assimp/postprocess.h"
 
 device_resources::device_resources() : last_signaled_fence_value(0)
 {
@@ -40,19 +43,6 @@ device_resources::device_resources() : last_signaled_fence_value(0)
         ASSERT(SUCCEEDED(hr));
         cmd_queue->SetName(L"main_cmd_queue");
     }
-
-    //for (UINT i = 0; i < NUM_BACK_BUFFERS; i++)
-    //{
-    //    hr = device->CreateCommandAllocator(
-    //        D3D12_COMMAND_LIST_TYPE::D3D12_COMMAND_LIST_TYPE_DIRECT,
-    //        __uuidof(ID3D12CommandAllocator),
-    //        (void **)&frame_cmds[i].cmd_alloc);
-    //    ASSERT(SUCCEEDED(hr));
-
-    //    wchar_t buf[50];
-    //    swprintf_s(buf, 50, L"%s%d", L"main_cmd_alloc_", i);
-    //    frame_cmds[i].cmd_alloc->SetName(buf);
-    //}
 
     hr = device->CreateFence(0, D3D12_FENCE_FLAGS::D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence), (void **)&fence);
     ASSERT(SUCCEEDED(hr));
@@ -254,6 +244,29 @@ void device_resources::create_dsv(UINT64 width, UINT height)
         dsv_heap->GetCPUDescriptorHandleForHeapStart());
 }
 
+D3D12_GRAPHICS_PIPELINE_STATE_DESC device_resources::create_default_pso(std::vector<D3D12_INPUT_ELEMENT_DESC> *input_layouts, ID3DBlob *vs, ID3DBlob *ps)
+{
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {};
+    desc.NodeMask = DEFAULT_NODE;
+    desc.pRootSignature = rootsig;
+    desc.InputLayout = {input_layouts->data(), (UINT)input_layouts->size()};
+    desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    desc.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
+
+    desc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC1(D3D12_DEFAULT);
+    desc.DSVFormat = dsv_format;
+
+    desc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+    desc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+    desc.RTVFormats[0] = rtv_format;
+    desc.NumRenderTargets = 1;
+    desc.SampleMask = UINT_MAX;
+    desc.SampleDesc.Count = 1;
+    desc.SampleDesc.Quality = 0;
+    desc.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
+    return desc;
+}
+
 void device_resources::resize_swapchain(int width, int height)
 {
     swapchain->ResizeBuffers(NUM_BACK_BUFFERS, width, height, rtv_format, swapchain_flags);
@@ -284,9 +297,6 @@ device_resources::~device_resources()
             safe_release(main_rt_resources[i]);
         }
     }
-
-    //for (int i = 0; i < NUM_BACK_BUFFERS; ++i)
-    //    safe_release(frame_cmds[i].cmd_alloc);
 
     safe_release(adapter);
     safe_release(dxgi_factory);
@@ -354,6 +364,173 @@ void device_resources::present(bool is_vsync)
     UINT present_flags = is_vsync ? 0 : DXGI_PRESENT_ALLOW_TEARING;
     swapchain->Present(sync_interval, present_flags);
 }
+
+std::vector<position_color> import_vertices(const char *path)
+{
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(path, aiProcess_JoinIdenticalVertices | aiProcess_Triangulate);
+    OutputDebugStringA(importer.GetErrorString());
+
+    std::vector<position_color> vertices;
+    //auto mesh = scene->mMeshes[0];
+
+    for (int i = 0; i < scene->mNumMeshes; ++i)
+    {
+        for (UINT j = 0; j < scene->mMeshes[i]->mNumVertices; ++j)
+        {
+            position_color vertex;
+            vertex.position.x = scene->mMeshes[i]->mVertices[j].x;
+            vertex.position.y = scene->mMeshes[i]->mVertices[j].y;
+            vertex.position.z = scene->mMeshes[i]->mVertices[j].z;
+
+            vertex.color = {1.f, 1.f, 1.f, 1.f};
+            vertices.push_back(vertex);
+        }
+    }
+
+    //for (UINT i = 0; i < mesh->mNumVertices; ++i)
+    //{
+    //    position_color vertex;
+    //    vertex.position.x = mesh->mVertices[i].x;
+    //    vertex.position.y = mesh->mVertices[i].y;
+    //    vertex.position.z = mesh->mVertices[i].z;
+
+    //    vertex.color = {1.f, 1.f, 1.f, 1.f};
+    //    vertices.push_back(vertex);
+    //}
+    return vertices;
+}
+
+std::vector<WORD> import_indices(const char *path)
+{
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(path, 0);
+    OutputDebugStringA(importer.GetErrorString());
+
+    //auto mesh = scene->mMeshes[0];
+    std::vector<WORD> indices;
+    for (int k = 0; k < scene->mNumMeshes; ++k)
+    {
+        for (UINT i = 0; i < scene->mMeshes[k]->mNumFaces; ++i)
+        {
+            for (UINT j = 0; j < scene->mMeshes[k]->mFaces[i].mNumIndices; ++j)
+            {
+                WORD index = scene->mMeshes[k]->mFaces[i].mIndices[j];
+                indices.push_back(index);
+            }
+        }
+    }
+    //for (UINT i = 0; i < mesh->mNumFaces; ++i)
+    //{
+    //    for (UINT j = 0; j < mesh->mFaces[i].mNumIndices; ++j)
+    //    {
+    //        WORD index = mesh->mFaces[i].mIndices[j];
+    //        indices.push_back(index);
+    //    }
+    //}
+    return indices;
+}
+
+std::vector<mesh_data> meshes;
+
+mesh_data processMesh(aiMesh *mesh, const aiScene *scene)
+{
+    mesh_data meshdata;
+    std::vector<position_color> vertices;
+    std::vector<WORD> indices;
+
+    for (unsigned int i = 0; i < mesh->mNumVertices; i++)
+    {
+        position_color vertex;
+        vertex.position.x = mesh->mVertices[i].x;
+        vertex.position.y = mesh->mVertices[i].y;
+        vertex.position.z = mesh->mVertices[i].z;
+        vertex.color = {1.f, 1.f, 1.f, 1.f};
+        vertices.push_back(vertex);
+    }
+    // process indices
+    for (unsigned int i = 0; i < mesh->mNumFaces; i++)
+    {
+        aiFace face = mesh->mFaces[i];
+        for (unsigned int j = 0; j < face.mNumIndices; j++)
+            indices.push_back(face.mIndices[j]);
+    }
+
+    meshdata.vertices = vertices;
+    meshdata.indices = indices;
+    return meshdata;
+}
+
+void processNode(aiNode *node, const aiScene *scene)
+{
+    // process all the node's meshes (if any)
+    for (unsigned int i = 0; i < node->mNumMeshes; i++)
+    {
+        aiMesh *mesh = scene->mMeshes[node->mMeshes[i]];
+        meshes.push_back(processMesh(mesh, scene));
+    }
+    // then do the same for each of its children
+    for (unsigned int i = 0; i < node->mNumChildren; i++)
+    {
+        processNode(node->mChildren[i], scene);
+    }
+}
+
+COMMON_API std::vector<mesh_data> import_meshdata(const char *path)
+{
+    Assimp::Importer importer;
+    importer.SetPropertyFloat(AI_CONFIG_PP_GSN_MAX_SMOOTHING_ANGLE, 80.0f);
+    importer.SetPropertyInteger(AI_CONFIG_PP_SBP_REMOVE, aiPrimitiveType_POINT | aiPrimitiveType_LINE);
+    unsigned int preprocessFlags = aiProcessPreset_TargetRealtime_MaxQuality | aiProcess_OptimizeGraph;
+    //unsigned int preprocessFlags = aiProcess_Triangulate | aiProcess_JoinIdenticalVertices;
+    //unsigned int preprocessFlags = aiProcessPreset_TargetRealtime_Quality | aiProcess_OptimizeGraph;
+
+    const aiScene *scene = importer.ReadFile(path, preprocessFlags);
+    OutputDebugStringA(importer.GetErrorString());
+    processNode(scene->mRootNode, scene);
+    return meshes;
+}
+
+//COMMON_API mesh_data import_meshdata(const char *path)
+//{
+//    Assimp::Importer importer;
+//    const aiScene *scene = importer.ReadFile(path, aiProcess_JoinIdenticalVertices | aiProcess_Triangulate);
+//    OutputDebugStringA(importer.GetErrorString());
+//    mesh_data data;
+//
+//    std::vector<position_color> vertices;
+//
+//    for (int i = 0; i < scene->mNumMeshes; ++i)
+//    {
+//        for (UINT j = 0; j < scene->mMeshes[i]->mNumVertices; ++j)
+//        {
+//            position_color vertex;
+//            vertex.position.x = scene->mMeshes[i]->mVertices[j].x;
+//            vertex.position.y = scene->mMeshes[i]->mVertices[j].y;
+//            vertex.position.z = scene->mMeshes[i]->mVertices[j].z;
+//
+//            vertex.color = {1.f, 1.f, 1.f, 1.f};
+//            vertices.push_back(vertex);
+//        }
+//    }
+//    data.vertices = vertices;
+//
+//    std::vector<WORD> indices;
+//    for (int k = 0; k < scene->mNumMeshes; ++k)
+//    {
+//        for (UINT i = 0; i < scene->mMeshes[k]->mNumFaces; ++i)
+//        {
+//            for (UINT j = 0; j < scene->mMeshes[k]->mFaces[i].mNumIndices; ++j)
+//            {
+//                WORD index = scene->mMeshes[k]->mFaces[i].mIndices[j];
+//                indices.push_back(index);
+//            }
+//        }
+//    }
+//    data.indices = indices;
+//
+//    return data;
+//}
 
 void set_viewport_rects(ID3D12GraphicsCommandList *cmd_list)
 {
@@ -466,7 +643,7 @@ void create_default_buffer(ID3D12Device *device,
                            size_t byte_size,
                            ID3D12Resource **upload_resource,
                            ID3D12Resource **default_resource,
-                           const char *name)
+                           const wchar_t *name)
 {
 
     hr = device->CreateCommittedResource(
@@ -480,7 +657,7 @@ void create_default_buffer(ID3D12Device *device,
     ID3D12Resource *p_default_resource = (*default_resource);
 
     wchar_t resource_name[50];
-    mbstowcs(resource_name, name, 50);
+    wcscpy(resource_name, name);
     wcscat(resource_name, L"_default_resource");
     p_default_resource->SetName(resource_name);
 
@@ -494,7 +671,7 @@ void create_default_buffer(ID3D12Device *device,
     ASSERT(SUCCEEDED(hr));
     ID3D12Resource *p_upload_resource = (*upload_resource);
 
-    mbstowcs(resource_name, name, 50);
+    wcscpy(resource_name, name);
     wcscat(resource_name, L"_upload_resource");
     p_upload_resource->SetName(resource_name);
 
@@ -511,20 +688,52 @@ void create_default_buffer(ID3D12Device *device,
         byte_size);
 }
 
-void create_mesh_data(ID3D12Device *device, ID3D12GraphicsCommandList *cmd_list, mesh *mesh, size_t stride, size_t count, void *data, const char *name)
+void create_mesh_data(ID3D12Device *device, ID3D12GraphicsCommandList *cmd_list, const wchar_t *name,
+                      size_t vertex_stride, size_t vertex_count, void *vertex_data,
+                      size_t index_stride, size_t index_count, void *index_data,
+                      mesh *mesh)
 {
-    size_t byte_size = stride * count;
+    mesh->name = name;
 
-    create_default_buffer(device, cmd_list,
-                          data, byte_size,
-                          &mesh->upload_resource, &mesh->default_resource, name);
-
-    mesh->vbv.BufferLocation = mesh->default_resource->GetGPUVirtualAddress();
+    // vertex data
+    mesh->vertex_count = (UINT)vertex_count;
+    size_t byte_size = vertex_stride * vertex_count;
+    mesh->vbv.StrideInBytes = (UINT)vertex_stride;
     mesh->vbv.SizeInBytes = (UINT)byte_size;
-    mesh->vbv.StrideInBytes = (UINT)stride;
+
+    wchar_t resource_name[50];
+    wcscpy(resource_name, name);
+    wcscat(resource_name, L"_vertex");
+    create_default_buffer(device, cmd_list,
+                          vertex_data, byte_size,
+                          &mesh->vertex_upload_resource, &mesh->vertex_default_resource, resource_name);
+
+    mesh->vbv.BufferLocation = mesh->vertex_default_resource->GetGPUVirtualAddress();
+
+    if (index_count > 0)
+    {
+        // index data
+        mesh->index_count = (UINT)index_count;
+        byte_size = index_stride * index_count;
+        mesh->ibv.Format = DXGI_FORMAT_R16_UINT;
+        mesh->ibv.SizeInBytes = (UINT)byte_size;
+
+        wcscpy(resource_name, name);
+        wcscat(resource_name, L"_index");
+        create_default_buffer(device, cmd_list,
+                              index_data, byte_size,
+                              &mesh->index_upload_resource, &mesh->index_default_resource, resource_name);
+
+        mesh->ibv.BufferLocation = mesh->index_default_resource->GetGPUVirtualAddress();
+
+        cmd_list->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+                                         mesh->index_default_resource,
+                                         D3D12_RESOURCE_STATE_COPY_DEST,
+                                         D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER));
+    }
 
     cmd_list->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
-                                     mesh->default_resource,
+                                     mesh->vertex_default_resource,
                                      D3D12_RESOURCE_STATE_COPY_DEST,
                                      D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER));
 }
@@ -534,7 +743,7 @@ size_t align_up(size_t value, size_t alignment)
     return ((value + (alignment - 1)) & ~(alignment - 1));
 }
 
-upload_buffer::upload_buffer(ID3D12Device *device, UINT element_count, UINT element_byte_size)
+upload_buffer::upload_buffer(ID3D12Device *device, UINT element_count, UINT element_byte_size, const char *name)
     : m_element_byte_size(element_byte_size)
 {
     m_buffer_size = m_element_byte_size * element_count;
@@ -546,6 +755,11 @@ upload_buffer::upload_buffer(ID3D12Device *device, UINT element_count, UINT elem
         D3D12_RESOURCE_STATE_GENERIC_READ,
         nullptr,
         IID_PPV_ARGS(&m_uploadbuffer));
+
+    wchar_t wname[50];
+    mbstowcs(wname, name, 50);
+    wcscat(wname, L"_upload_resource");
+    m_uploadbuffer->SetName(wname);
 
     m_uploadbuffer->Map(0, nullptr, reinterpret_cast<void **>(&m_mapped_data));
 }

@@ -92,7 +92,7 @@
       <PrecompiledHeaderFile>
       </PrecompiledHeaderFile>
       <AdditionalOptions>%(AdditionalOptions) /FS</AdditionalOptions>
-      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>

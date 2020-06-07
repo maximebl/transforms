@@ -124,7 +124,7 @@ extern "C" __declspec(dllexport) bool initialize();
 
 // triangle creation
 #define triangle_vertices_count 3
-struct position_color
+struct triangle_data
 {
     float position[4];
     float color[4];
@@ -633,7 +633,7 @@ internal void init_pipeline()
     pso_desc.PS = {tri_ps_blob->GetBufferPointer(), tri_ps_blob->GetBufferSize()};
     pso_desc.RTVFormats[0] = rtv_format;
     pso_desc.DSVFormat = dsv_format;
-    pso_desc.NumRenderTargets = NUM_BACK_BUFFERS;
+    pso_desc.NumRenderTargets = 1;
     pso_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE::D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso_desc.SampleDesc.Count = 1;
     pso_desc.SampleDesc.Quality = 0;
@@ -1086,7 +1086,7 @@ extern "C" __declspec(dllexport) bool update_and_render()
         ImGui::ShowDemoWindow(&show_demo_window);
 
     {
-        imgui_appswitcher();
+        imgui_app_combo();
         imgui_mouse_pos();
         imgui_gpu_memory(adapter);
 
@@ -1226,13 +1226,13 @@ extern "C" __declspec(dllexport) bool update_and_render()
             triangles.push_back(new_tri);
 
             // committed resource per triangle
-            position_color vertices[triangle_vertices_count] = {
+            triangle_data vertices[triangle_vertices_count] = {
                 {{0.0f, 0.25f, 0.0f, 1.0f}, {1.0f, 0.0f, 0.0f, 1.0f}},
                 {{0.25f, -0.25f, 0.0f, 1.0f}, {0.0f, 1.0f, 0.0f, 1.0f}},
                 {{-0.25f, -0.25f, 0.0f, 1.0f}, {0.0f, 0.0f, 1.0f, 1.0f}},
             };
 
-            size_t stride = sizeof(position_color);
+            size_t stride = sizeof(triangle_data);
             size_t vertex_buffer_byte_size = stride * _countof(vertices);
 
             hr = g_device->CreateCommittedResource(

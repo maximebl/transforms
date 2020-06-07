@@ -5,9 +5,20 @@
 
 using namespace DirectX;
 
-struct object_cb
+struct object_data
 {
     DirectX::XMFLOAT4X4 world;
+};
+
+struct instance_data
+{
+    DirectX::XMFLOAT4X4 world;
+};
+
+struct pass_data
+{
+    DirectX::XMFLOAT4X4 view;
+    DirectX::XMFLOAT4X4 proj;
 };
 
 class frame_cmd
@@ -26,9 +37,11 @@ class frame_resource : public frame_cmd
 {
 public:
     frame_resource() = default;
-    frame_resource(ID3D12Device *device, size_t frame_index, UINT instance_count);
+    frame_resource(ID3D12Device *device, size_t frame_index, UINT element_count, UINT instance_count, UINT pass_count);
     ~frame_resource();
     upload_buffer *cb_objconstant_upload = nullptr;
+    upload_buffer *sb_instancedata_upload = nullptr;
+    upload_buffer *cb_passdata_upload = nullptr;
     UINT cb_objconstants_size = 0;
 };
 
@@ -38,12 +51,15 @@ struct render_item
 
     mesh *meshes;
     XMFLOAT4X4 world;
+    std::vector<instance_data> instance_data;
 
     UINT cb_index = -1;
     int num_frames_dirty = NUM_BACK_BUFFERS;
     D3D12_PRIMITIVE_TOPOLOGY topology = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 
+    UINT instance_count = 0;
     UINT index_count = 0;
+    UINT vertex_count = 0;
     UINT start_index_location = 0;
     int base_vertex_location = 0;
 };
