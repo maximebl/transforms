@@ -1,6 +1,6 @@
 #pragma once
-#include "../common/common.h"
-#include "../common/gpu_interface.h"
+#include <common.h>
+#include <gpu_interface.h>
 #include <unordered_map>
 
 using namespace DirectX;
@@ -49,11 +49,14 @@ struct render_item
 {
     render_item() = default;
 
-    mesh *meshes;
+    bool is_selected = false;
+    std::string name;
+    int id = -1;
+    mesh meshes;
     XMFLOAT4X4 world;
     std::vector<instance_data> instance_data;
 
-    UINT cb_index = -1;
+    int cb_index = -1;
     int num_frames_dirty = NUM_BACK_BUFFERS;
     D3D12_PRIMITIVE_TOPOLOGY topology = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 

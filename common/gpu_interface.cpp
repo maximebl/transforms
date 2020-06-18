@@ -1,9 +1,9 @@
 #include "gpu_interface.h"
 #include <d3dcompiler.h>
 #include "PathCch.h"
-#include "assimp/Importer.hpp"
-#include "assimp/scene.h"
-#include "assimp/postprocess.h"
+#include <assimp/Importer.hpp>
+#include <assimp/scene.h>
+#include <assimp/postprocess.h>
 
 device_resources::device_resources() : last_signaled_fence_value(0)
 {
@@ -365,75 +365,9 @@ void device_resources::present(bool is_vsync)
     swapchain->Present(sync_interval, present_flags);
 }
 
-std::vector<position_color> import_vertices(const char *path)
-{
-    Assimp::Importer importer;
-    const aiScene *scene = importer.ReadFile(path, aiProcess_JoinIdenticalVertices | aiProcess_Triangulate);
-    OutputDebugStringA(importer.GetErrorString());
-
-    std::vector<position_color> vertices;
-    //auto mesh = scene->mMeshes[0];
-
-    for (int i = 0; i < scene->mNumMeshes; ++i)
-    {
-        for (UINT j = 0; j < scene->mMeshes[i]->mNumVertices; ++j)
-        {
-            position_color vertex;
-            vertex.position.x = scene->mMeshes[i]->mVertices[j].x;
-            vertex.position.y = scene->mMeshes[i]->mVertices[j].y;
-            vertex.position.z = scene->mMeshes[i]->mVertices[j].z;
-
-            vertex.color = {1.f, 1.f, 1.f, 1.f};
-            vertices.push_back(vertex);
-        }
-    }
-
-    //for (UINT i = 0; i < mesh->mNumVertices; ++i)
-    //{
-    //    position_color vertex;
-    //    vertex.position.x = mesh->mVertices[i].x;
-    //    vertex.position.y = mesh->mVertices[i].y;
-    //    vertex.position.z = mesh->mVertices[i].z;
-
-    //    vertex.color = {1.f, 1.f, 1.f, 1.f};
-    //    vertices.push_back(vertex);
-    //}
-    return vertices;
-}
-
-std::vector<WORD> import_indices(const char *path)
-{
-    Assimp::Importer importer;
-    const aiScene *scene = importer.ReadFile(path, 0);
-    OutputDebugStringA(importer.GetErrorString());
-
-    //auto mesh = scene->mMeshes[0];
-    std::vector<WORD> indices;
-    for (int k = 0; k < scene->mNumMeshes; ++k)
-    {
-        for (UINT i = 0; i < scene->mMeshes[k]->mNumFaces; ++i)
-        {
-            for (UINT j = 0; j < scene->mMeshes[k]->mFaces[i].mNumIndices; ++j)
-            {
-                WORD index = scene->mMeshes[k]->mFaces[i].mIndices[j];
-                indices.push_back(index);
-            }
-        }
-    }
-    //for (UINT i = 0; i < mesh->mNumFaces; ++i)
-    //{
-    //    for (UINT j = 0; j < mesh->mFaces[i].mNumIndices; ++j)
-    //    {
-    //        WORD index = mesh->mFaces[i].mIndices[j];
-    //        indices.push_back(index);
-    //    }
-    //}
-    return indices;
-}
-
 std::vector<mesh_data> meshes;
 
-mesh_data processMesh(aiMesh *mesh, const aiScene *scene)
+mesh_data process_mesh(aiMesh *mesh, const aiScene *scene)
 {
     mesh_data meshdata;
     std::vector<position_color> vertices;
@@ -458,21 +392,22 @@ mesh_data processMesh(aiMesh *mesh, const aiScene *scene)
 
     meshdata.vertices = vertices;
     meshdata.indices = indices;
+    meshdata.name = mesh->mName.C_Str();
     return meshdata;
 }
 
-void processNode(aiNode *node, const aiScene *scene)
+void process_node(aiNode *node, const aiScene *scene)
 {
     // process all the node's meshes (if any)
     for (unsigned int i = 0; i < node->mNumMeshes; i++)
     {
         aiMesh *mesh = scene->mMeshes[node->mMeshes[i]];
-        meshes.push_back(processMesh(mesh, scene));
+        meshes.push_back(process_mesh(mesh, scene));
     }
     // then do the same for each of its children
     for (unsigned int i = 0; i < node->mNumChildren; i++)
     {
-        processNode(node->mChildren[i], scene);
+        process_node(node->mChildren[i], scene);
     }
 }
 
@@ -481,56 +416,15 @@ COMMON_API std::vector<mesh_data> import_meshdata(const char *path)
     Assimp::Importer importer;
     importer.SetPropertyFloat(AI_CONFIG_PP_GSN_MAX_SMOOTHING_ANGLE, 80.0f);
     importer.SetPropertyInteger(AI_CONFIG_PP_SBP_REMOVE, aiPrimitiveType_POINT | aiPrimitiveType_LINE);
-    unsigned int preprocessFlags = aiProcessPreset_TargetRealtime_MaxQuality | aiProcess_OptimizeGraph;
-    //unsigned int preprocessFlags = aiProcess_Triangulate | aiProcess_JoinIdenticalVertices;
-    //unsigned int preprocessFlags = aiProcessPreset_TargetRealtime_Quality | aiProcess_OptimizeGraph;
+    unsigned int preprocess_flags = aiProcessPreset_TargetRealtime_MaxQuality | aiProcess_OptimizeGraph;
 
-    const aiScene *scene = importer.ReadFile(path, preprocessFlags);
+    const aiScene *scene = importer.ReadFile(path, preprocess_flags);
     OutputDebugStringA(importer.GetErrorString());
-    processNode(scene->mRootNode, scene);
+
+    meshes.clear();
+    process_node(scene->mRootNode, scene);
     return meshes;
 }
-
-//COMMON_API mesh_data import_meshdata(const char *path)
-//{
-//    Assimp::Importer importer;
-//    const aiScene *scene = importer.ReadFile(path, aiProcess_JoinIdenticalVertices | aiProcess_Triangulate);
-//    OutputDebugStringA(importer.GetErrorString());
-//    mesh_data data;
-//
-//    std::vector<position_color> vertices;
-//
-//    for (int i = 0; i < scene->mNumMeshes; ++i)
-//    {
-//        for (UINT j = 0; j < scene->mMeshes[i]->mNumVertices; ++j)
-//        {
-//            position_color vertex;
-//            vertex.position.x = scene->mMeshes[i]->mVertices[j].x;
-//            vertex.position.y = scene->mMeshes[i]->mVertices[j].y;
-//            vertex.position.z = scene->mMeshes[i]->mVertices[j].z;
-//
-//            vertex.color = {1.f, 1.f, 1.f, 1.f};
-//            vertices.push_back(vertex);
-//        }
-//    }
-//    data.vertices = vertices;
-//
-//    std::vector<WORD> indices;
-//    for (int k = 0; k < scene->mNumMeshes; ++k)
-//    {
-//        for (UINT i = 0; i < scene->mMeshes[k]->mNumFaces; ++i)
-//        {
-//            for (UINT j = 0; j < scene->mMeshes[k]->mFaces[i].mNumIndices; ++j)
-//            {
-//                WORD index = scene->mMeshes[k]->mFaces[i].mIndices[j];
-//                indices.push_back(index);
-//            }
-//        }
-//    }
-//    data.indices = indices;
-//
-//    return data;
-//}
 
 void set_viewport_rects(ID3D12GraphicsCommandList *cmd_list)
 {
@@ -693,47 +587,48 @@ void create_mesh_data(ID3D12Device *device, ID3D12GraphicsCommandList *cmd_list,
                       size_t index_stride, size_t index_count, void *index_data,
                       mesh *mesh)
 {
+    mesh->resource = new mesh_resource; 
     mesh->name = name;
 
     // vertex data
     mesh->vertex_count = (UINT)vertex_count;
     size_t byte_size = vertex_stride * vertex_count;
-    mesh->vbv.StrideInBytes = (UINT)vertex_stride;
-    mesh->vbv.SizeInBytes = (UINT)byte_size;
+    mesh->resource->vbv.StrideInBytes = (UINT)vertex_stride;
+    mesh->resource->vbv.SizeInBytes = (UINT)byte_size;
 
     wchar_t resource_name[50];
     wcscpy(resource_name, name);
     wcscat(resource_name, L"_vertex");
     create_default_buffer(device, cmd_list,
                           vertex_data, byte_size,
-                          &mesh->vertex_upload_resource, &mesh->vertex_default_resource, resource_name);
+                          &mesh->resource->vertex_upload, &mesh->resource->vertex_default, resource_name);
 
-    mesh->vbv.BufferLocation = mesh->vertex_default_resource->GetGPUVirtualAddress();
+    mesh->resource->vbv.BufferLocation = mesh->resource->vertex_default->GetGPUVirtualAddress();
 
     if (index_count > 0)
     {
         // index data
         mesh->index_count = (UINT)index_count;
         byte_size = index_stride * index_count;
-        mesh->ibv.Format = DXGI_FORMAT_R16_UINT;
-        mesh->ibv.SizeInBytes = (UINT)byte_size;
+        mesh->resource->ibv.Format = DXGI_FORMAT_R16_UINT;
+        mesh->resource->ibv.SizeInBytes = (UINT)byte_size;
 
         wcscpy(resource_name, name);
         wcscat(resource_name, L"_index");
         create_default_buffer(device, cmd_list,
                               index_data, byte_size,
-                              &mesh->index_upload_resource, &mesh->index_default_resource, resource_name);
+                              &mesh->resource->index_upload, &mesh->resource->index_default, resource_name);
 
-        mesh->ibv.BufferLocation = mesh->index_default_resource->GetGPUVirtualAddress();
+        mesh->resource->ibv.BufferLocation = mesh->resource->index_default->GetGPUVirtualAddress();
 
         cmd_list->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
-                                         mesh->index_default_resource,
+                                         mesh->resource->index_default,
                                          D3D12_RESOURCE_STATE_COPY_DEST,
                                          D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER));
     }
 
     cmd_list->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
-                                     mesh->vertex_default_resource,
+                                     mesh->resource->vertex_default,
                                      D3D12_RESOURCE_STATE_COPY_DEST,
                                      D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER));
 }

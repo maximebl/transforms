@@ -36,6 +36,12 @@
     <ClInclude Include="imgui_helpers.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="math_helpers.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="cameraz.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp">
@@ -51,6 +57,12 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="gpu_query.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="math_helpers.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="cameraz.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

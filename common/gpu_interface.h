@@ -21,12 +21,39 @@ struct position_color
 
 struct mesh_data
 {
+    std::string name;
     std::vector<position_color> vertices;
     std::vector<WORD> indices;
 };
 
-COMMON_API std::vector<position_color> import_vertices(const char *path);
-COMMON_API std::vector<WORD> import_indices(const char *path);
+struct submesh
+{
+    std::string name = "";
+    bool is_selected = false;
+    UINT vertex_count = 0;
+    UINT index_count = 0;
+};
+
+struct mesh_resource
+{
+    ID3D12Resource *vertex_default = nullptr;
+    ID3D12Resource *vertex_upload = nullptr;
+    ID3D12Resource *index_default = nullptr;
+    ID3D12Resource *index_upload = nullptr;
+    D3D12_VERTEX_BUFFER_VIEW vbv = {};
+    D3D12_INDEX_BUFFER_VIEW ibv = {};
+};
+
+struct mesh
+{
+    std::wstring name;
+    std::vector<submesh> submeshes;
+    UINT cb_index = -1;
+    UINT vertex_count = 0;
+    UINT index_count = 0;
+    mesh_resource *resource;
+};
+
 COMMON_API std::vector<mesh_data> import_meshdata(const char *path);
 COMMON_API void set_viewport_rects(ID3D12GraphicsCommandList *cmd_list);
 COMMON_API bool compile_shader(const wchar_t *file, const wchar_t *entry, shader_type type, ID3DBlob **blob);
@@ -34,20 +61,6 @@ COMMON_API size_t align_up(size_t value, size_t alignment);
 COMMON_API void create_default_buffer(ID3D12Device *device, ID3D12GraphicsCommandList *cmd_list,
                                       const void *data, size_t byte_size,
                                       ID3D12Resource **upload_resource, ID3D12Resource **default_resource, const wchar_t *name);
-
-struct mesh
-{
-    const wchar_t *name;
-    UINT cb_index = -1;
-    UINT vertex_count = 0;
-    UINT index_count = 0;
-    ID3D12Resource *vertex_default_resource = nullptr;
-    ID3D12Resource *vertex_upload_resource = nullptr;
-    ID3D12Resource *index_default_resource = nullptr;
-    ID3D12Resource *index_upload_resource = nullptr;
-    D3D12_VERTEX_BUFFER_VIEW vbv = {};
-    D3D12_INDEX_BUFFER_VIEW ibv = {};
-};
 
 COMMON_API void create_mesh_data(ID3D12Device *device, ID3D12GraphicsCommandList *cmd_list, const wchar_t *name,
                                  size_t vertex_stride, size_t vertex_count, void *vertex_data,

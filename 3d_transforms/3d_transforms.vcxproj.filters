@@ -36,7 +36,4 @@
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
-  <ItemGroup>
-    <FxCompile Include="shaders\perspective.hlsl" />
-  </ItemGroup>
 </Project>

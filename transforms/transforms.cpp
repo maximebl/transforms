@@ -1,11 +1,11 @@
 #include "pch.h"
 //it's important to include imgui.h before imgui_impl_dx12 and imgui_impl_win32
-#include "../imgui/imgui.h"
-#include "../imgui/imgui_impl_dx12.h"
-#include "../imgui/imgui_impl_win32.h"
-#include "../common/common.h"
-#include "../common/gpu_query.h"
-#include "../common/imgui_helpers.h"
+#include <imgui.h>
+#include <imgui_impl_dx12.h>
+#include <imgui_impl_win32.h>
+#include <common.h>
+#include <gpu_query.h>
+#include <imgui_helpers.h>
 
 #ifdef DX12_ENABLE_DEBUG_LAYER
 #include <dxgidebug.h>
