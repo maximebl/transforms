@@ -10,6 +10,8 @@
 #include "shlwapi.h"
 #include "math_helpers.h"
 #include "cameraz.h"
+#include <functional>
+#include <tuple>
 camera cam;
 
 using namespace DirectX;
@@ -64,8 +66,8 @@ internal bool show_perf = true;
 
 // Render items data
 #define MAX_RENDER_ITEMS 10
-#define NUM_RENDER_ITEMS 2
-#define MAX_INSTANCE_COUNT_PER_OBJECT 1
+#define NUM_RENDER_ITEMS 1
+#define MAX_INSTANCE_COUNT_PER_OBJECT 2
 internal std::vector<render_item> render_items;
 
 // Geometry
@@ -411,13 +413,6 @@ XMVECTOR orbit_target_pos = XMVectorSet(0.f, 0.f, 0.f, 1.f);
 
 internal void update_camera()
 {
-    //x = radius * sinf(phi) * cosf(theta); // zero
-    //y = radius * cosf(phi);               // 3.53
-    //z = radius * sinf(phi) * sinf(theta); // -3.53
-    //cam.position = XMVectorSet(x, y, z, 1.0f);
-    //XMVECTOR camera_pos = XMVectorSet(x, y, z, 1.0f);
-    //XMMATRIX view = XMMatrixTranspose(view_matrix_lh(cam.position, world_up_dir, target_pos));
-
     ImGui::SliderFloat4("Right direction", camera_right.m128_f32, -1.f, 1.f);
     ImGui::SliderFloat4("Up direction", camera_up.m128_f32, -1.f, 1.f);
     ImGui::SliderFloat4("Forward direction", camera_dir.m128_f32, -1.f, 1.f);
@@ -427,6 +422,7 @@ internal void update_camera()
     ImGui::SliderFloat("Camera yaw", &cam.yaw, -180.f, +180.f);
     ImGui::SliderFloat("Angle", &angle, 0, 180);
     ImGui::Checkbox("is orbiting", &is_orbiting);
+
     for (int i = 0; i < render_items.size(); i++)
     {
         render_item *ri = &render_items[i];
@@ -503,6 +499,502 @@ internal void update_camera()
     frame->cb_passdata_upload->copy_data(0, (void *)&pass);
 }
 
+struct sub_thing
+{
+    bool is_selected = false;
+    std::string name;
+};
+struct some_int
+{
+    std::string name;
+    int value;
+    bool is_selected = false;
+    std::vector<sub_thing> subthings;
+};
+struct some_float
+{
+    std::string name;
+    float value;
+    bool is_selected = false;
+    std::vector<sub_thing> subthings;
+};
+struct some_double
+{
+    std::string name;
+    double value;
+    bool is_selected = false;
+    std::vector<sub_thing> subthings;
+};
+
+std::vector<some_float> int_items;
+std::vector<some_int> int_items2;
+std::vector<some_float> float_items;
+std::vector<some_float> float_items2;
+std::vector<some_float> float_items3;
+std::vector<some_float> float_items4;
+std::vector<some_float> float_items5;
+std::vector<some_float> float_items6;
+std::vector<some_double> double_items;
+std::vector<some_double> double_items2;
+std::vector<some_double> double_items3;
+std::vector<some_double> double_items4;
+bool first_pass = true;
+sub_thing first_sub;
+sub_thing second_sub;
+some_int first;
+some_float first_else;
+
+void prep_data()
+{
+    // ints
+    some_float int1;
+    int1.name = "int_items: first int";
+    int1.is_selected = false;
+    int1.value = 0;
+    int_items.push_back(int1);
+
+    some_int int2;
+    int2.name = "int_items2: second int";
+    int2.is_selected = false;
+    int2.value = 1;
+    int_items2.push_back(int2);
+
+    // floats
+    some_float float1;
+    float1.name = "float_items: first float";
+    float1.is_selected = false;
+    float1.value = 0.0f;
+    float_items.push_back(float1);
+
+    //some_float float2;
+    //float2.name = "float_items: second float";
+    //float2.is_selected = false;
+    //float2.value = 1.0f;
+    //float_items.push_back(float2);
+
+    some_float float3;
+    float3.name = "float_items2: first float";
+    float3.is_selected = false;
+    float3.value = 0.0f;
+    float_items2.push_back(float3);
+
+    some_float float4;
+    float4.name = "float_items3: second float";
+    float4.is_selected = false;
+    float4.value = 1.0f;
+    float_items3.push_back(float4);
+
+    some_float float5;
+    float5.name = "float_items4: first float";
+    float5.is_selected = false;
+    float5.value = 1.0f;
+    float_items4.push_back(float5);
+
+    some_float float6;
+    float6.name = "float_items5: first float";
+    float6.is_selected = false;
+    float6.value = 1.0f;
+    float_items5.push_back(float6);
+
+    some_float float7;
+    float7.name = "float_items6: first float";
+    float7.is_selected = false;
+    float7.value = 1.0f;
+    float_items6.push_back(float7);
+
+    // doubles
+    some_double double1;
+    double1.name = "double_items: first double";
+    double1.is_selected = false;
+    double1.value = 1.0;
+    double_items.push_back(double1);
+
+    some_double double2;
+    double2.name = "double_items: second double";
+    double2.is_selected = false;
+    double2.value = 2.0;
+    double_items.push_back(double2);
+
+    some_double double3;
+    double3.name = "double_items2: first double";
+    double3.is_selected = false;
+    double3.value = 1.0;
+    double_items2.push_back(double3);
+
+    some_double double4;
+    double4.name = "double_items2: second double";
+    double4.is_selected = false;
+    double4.value = 2.0;
+    double_items2.push_back(double4);
+}
+
+struct tree_item
+{
+    bool *is_selected;
+    std::string name;
+    std::vector<tree_item> children;
+    std::function<void()> on_expand_callback;
+    std::function<void(bool *)> on_select_callback;
+};
+
+// recursive function to handle nested tree items
+void expand_nested(tree_item ti)
+{
+    bool is_expanded = ImGui::TreeNodeExV((void *)nullptr, ImGuiTreeNodeFlags_FramePadding, "", nullptr);
+    ImGui::SameLine();
+    if (ImGui::Selectable(ti.name.c_str(), *ti.is_selected))
+        ti.on_select_callback(ti.is_selected);
+
+    if (is_expanded)
+    {
+        ti.on_expand_callback(); // render the ImGui content for this tree item
+        for (size_t j = 0; j < ti.children.size(); j++)
+        {
+            ImGui::PushID((int)j);
+            expand_nested(ti.children[j]); // recursively render the ImGui content for the nested tree items
+            ImGui::PopID();
+        }
+        ImGui::TreePop();
+    }
+}
+
+void imgui_nested_tree()
+{
+    if (ImGui::CollapsingHeader("Render items"))
+    {
+        if (first_pass)
+        {
+            prep_data();
+            first_pass = false;
+        }
+
+        tree_item tree_int;
+        tree_int.name = int_items[0].name;
+        tree_int.is_selected = &int_items[0].is_selected;
+        tree_int.on_expand_callback = [&]() {
+            ImGui::Text("tree_int");
+        };
+        tree_int.on_select_callback = [&](bool *is_selected) {
+            *is_selected = true;
+        };
+
+        tree_item tree_float;
+        tree_float.name = float_items[0].name;
+        tree_float.is_selected = &float_items[0].is_selected;
+        tree_float.on_expand_callback = [&]() {
+            ImGui::Text("tree_float");
+        };
+        tree_float.on_select_callback = [&](bool *is_selected) {
+            *is_selected = true;
+        };
+
+        tree_item tree_float2;
+        tree_float2.name = float_items2[0].name;
+        tree_float2.is_selected = &float_items2[0].is_selected;
+        tree_float2.on_expand_callback = [&]() {
+            ImGui::Text("tree_float2");
+        };
+        tree_float2.on_select_callback = [&](bool *is_selected) {
+            *is_selected = true;
+        };
+
+        tree_item tree_float3;
+        tree_float3.name = float_items3[0].name;
+        tree_float3.is_selected = &float_items3[0].is_selected;
+        tree_float3.on_expand_callback = [&]() {
+            ImGui::Text("tree_float3");
+        };
+        tree_float3.on_select_callback = [&](bool *is_selected) {
+            *is_selected = true;
+        };
+
+        tree_item tree_float4;
+        tree_float4.name = float_items4[0].name;
+        tree_float4.is_selected = &float_items4[0].is_selected;
+        tree_float4.on_expand_callback = [&]() {
+            ImGui::Text("tree_float4");
+        };
+        tree_float4.on_select_callback = [&](bool *is_selected) {
+            *is_selected = true;
+        };
+
+        tree_item tree_float5;
+        tree_float5.name = float_items5[0].name;
+        tree_float5.is_selected = &float_items5[0].is_selected;
+        tree_float5.on_expand_callback = [&]() {
+            ImGui::Text("tree_float5");
+        };
+        tree_float5.on_select_callback = [&](bool *is_selected) {
+            *is_selected = true;
+        };
+
+        tree_item tree_float6;
+        tree_float6.name = float_items6[0].name;
+        tree_float6.is_selected = &float_items6[0].is_selected;
+        tree_float6.on_expand_callback = [&]() {
+            ImGui::Text("tree_float6");
+        };
+        tree_float6.on_select_callback = [&](bool *is_selected) {
+            *is_selected = true;
+        };
+
+        std::vector<tree_item> tree_float_childrens;
+        tree_float_childrens.push_back(tree_float3);
+        tree_float_childrens.push_back(tree_float4);
+        tree_float.children = tree_float_childrens;
+
+        std::vector<tree_item> tree_float2_childrens;
+        tree_float2_childrens.push_back(tree_float5);
+        tree_float2_childrens.push_back(tree_float6);
+        tree_float2.children = tree_float2_childrens;
+
+        std::vector<tree_item> tree_int_childrens;
+        tree_int_childrens.push_back(tree_float);
+        tree_int_childrens.push_back(tree_float2);
+        tree_int.children = tree_int_childrens;
+        expand_nested(tree_int);
+
+        float indentation = 10.f;
+        for (size_t i = 0; i < render_items.size(); i++)
+        {
+            render_item *ri = &render_items[i];
+            std::vector<tree_item> tree_ri_childrens;
+
+            size_t num_submeshes = ri->meshes.submeshes.size();
+            // NOTE: If the data was organised as SoA we wouldn't have to re-organize the data here:
+            for (size_t k = 0; k < num_submeshes; k++)
+            {
+                submesh *sm = &ri->meshes.submeshes[k];
+
+                // Submeshes
+                tree_item tree_sm;
+                tree_sm.name = sm->name;
+                tree_sm.is_selected = &sm->is_selected;
+
+                tree_sm.on_expand_callback = [indentation, k, sm]() {
+                    ImGui::Indent(indentation);
+                    ImGui::Text("submesh #%zu", k);
+                    ImGui::Text("Vertex count: %d", sm->vertex_count);
+                    ImGui::Text("Index count: %d", sm->index_count);
+                    ImGui::Unindent(indentation);
+                };
+
+                tree_sm.on_select_callback = [&](bool *is_selected) {
+                    *is_selected = true;
+                };
+
+                tree_ri_childrens.push_back(tree_sm);
+            }
+
+            // Render items
+            tree_item tree_ri;
+            tree_ri.name = ri->name;
+            tree_ri.is_selected = &ri->is_selected;
+
+            tree_ri.on_expand_callback = [num_submeshes, indentation, ri, i]() {
+                ImGui::Text("render item #%zu", i);
+                ImGui::Text("Instance count: %d", ri->instance_count);
+                ImGui::Text("Vertex total: %d", ri->vertex_count);
+                ImGui::Text("Index total: %d", ri->index_count);
+                ImGui::NewLine();
+
+                for (UINT j = 0; j < ri->instance_count; j++)
+                {
+                    ImGui::PushID(j);
+                    float inst_pos[4];
+                    inst_pos[0] = ri->instance_data[j].world._41;
+                    inst_pos[1] = ri->instance_data[j].world._42;
+                    inst_pos[2] = ri->instance_data[j].world._43;
+                    inst_pos[3] = ri->instance_data[j].world._44;
+                    ImGui::Text("Instance %d postition:", j);
+
+                    // The empty space is to work around a bug in DearImGui.
+                    // if you pass an empty string to InputFloat4 it will break.
+                    ImGui::InputFloat4(" ", inst_pos, 3);
+                    ImGui::PopID();
+                }
+                ImGui::NewLine();
+
+                if (num_submeshes > 0)
+                    ImGui::Text("Submeshes (%zu)", num_submeshes);
+            };
+
+            tree_ri.on_select_callback = [&](bool *is_selected) {
+                *is_selected = true;
+            };
+
+            tree_ri.children = tree_ri_childrens;
+
+            ImGui::PushID((int)i);
+            // render the ImGui content for this render item as described in the callback
+            // and recursively render nested child elements.
+            expand_nested(tree_ri);
+            ImGui::PopID();
+        }
+    }
+
+    if (ImGui::CollapsingHeader("Manual coding"))
+    {
+        // first set
+        ImGui::PushID(0);
+        bool is_expanded = ImGui::TreeNodeExV("render_items", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
+        ImGui::PopID();
+        ImGui::SameLine();
+        ImGui::Selectable("outer selectable", false);
+        if (is_expanded)
+        {
+            ImGui::PushID(0);
+            bool is_expanded = ImGui::TreeNodeExV("render_items", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
+            ImGui::PopID();
+            ImGui::SameLine();
+            ImGui::Selectable("inner1 selectable", false);
+            if (is_expanded)
+            {
+                ImGui::PushID(0);
+                bool is_expanded = ImGui::TreeNodeExV("render_items", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
+                ImGui::PopID();
+                ImGui::SameLine();
+                ImGui::Selectable("inner2 selectable", false);
+                if (is_expanded)
+                {
+                    ImGui::PushID(0);
+                    bool is_expanded = ImGui::TreeNodeExV("render_items", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
+                    ImGui::PopID();
+                    ImGui::SameLine();
+                    ImGui::Selectable("inner3 selectable", false);
+                    if (is_expanded)
+                    {
+                        ImGui::TreePop();
+                    }
+                    ImGui::TreePop();
+                }
+                ImGui::TreePop();
+            }
+
+            ImGui::PushID(1);
+            bool is_expanded2 = ImGui::TreeNodeExV("render_items", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
+            ImGui::PopID();
+            ImGui::SameLine();
+            ImGui::Selectable("inner1 selectable", false);
+            if (is_expanded2)
+            {
+                ImGui::PushID(1);
+                bool is_expanded2 = ImGui::TreeNodeExV("render_items", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
+                ImGui::PopID();
+                ImGui::SameLine();
+                ImGui::Selectable("inner2 selectable", false);
+                if (is_expanded2)
+                {
+                    ImGui::TreePop();
+                }
+                ImGui::TreePop();
+            }
+            ImGui::TreePop();
+        }
+
+        // second set
+        bool is_expanded2 = ImGui::TreeNodeExV("render_items", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
+        ImGui::SameLine();
+        ImGui::Selectable("outer selectable", false);
+        if (is_expanded2)
+        {
+
+            bool is_expanded = ImGui::TreeNodeExV("render_items", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
+            ImGui::SameLine();
+            ImGui::Selectable("inner1 selectable", false);
+            if (is_expanded)
+            {
+                bool is_expanded = ImGui::TreeNodeExV("render_items", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
+                ImGui::SameLine();
+                ImGui::Selectable("inner2 selectable", false);
+                if (is_expanded)
+                {
+                    bool is_expanded = ImGui::TreeNodeExV("render_items", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
+                    ImGui::SameLine();
+                    ImGui::Selectable("inner3 selectable", false);
+                    if (is_expanded)
+                    {
+                        ImGui::TreePop();
+                    }
+                    ImGui::TreePop();
+                }
+                ImGui::TreePop();
+            }
+            ImGui::TreePop();
+        }
+    }
+}
+
+//template <typename T>
+//struct tree_item
+//{
+//    std::vector<T> *items;
+//    std::function<void(T)> inner_node_callback;
+//    std::function<void(std::vector<T> *, int)> outer_node_callback;
+//};
+//
+//template <typename... Ts>
+//struct tuple_node
+//{
+//    std::tuple<Ts...> tupl;
+//};
+//
+//// recursion base case
+//template <typename T>
+//void expand_nested(tree_item<T> ti)
+//{
+//    bool node_expanded = false;
+//
+//    for (int i = 0; i < ti.items->size(); ++i)
+//    {
+//        ImGui::PushID(i);
+//        node_expanded = ImGui::TreeNodeExV("", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
+//        ImGui::SameLine();
+//        ImGui::PopID();
+//
+//        ti.outer_node_callback(ti.items, i);
+//
+//        if (node_expanded)
+//        {
+//            ti.inner_node_callback(ti.items->at(i));
+//            ImGui::TreePop();
+//        }
+//    }
+//}
+//
+//int curr_iter = 0;
+//// recursive function
+//template <typename T, typename... Rest>
+//void expand_nested(tree_item<T> ti, tree_item<Rest>... rest)
+//{
+//    bool node_expanded = false;
+//    int i = curr_iter;
+//    ImGui::PushID((int)i);
+//    node_expanded = ImGui::TreeNodeExV("", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
+//    ImGui::SameLine();
+//    ImGui::PopID();
+//    ti.outer_node_callback(ti.items, i);
+//
+//    if (node_expanded)
+//    {
+//        ti.inner_node_callback(ti.items->at(i));
+//        expand_nested(rest...);
+//        ImGui::TreePop();
+//    }
+//}
+//
+//template <typename... Ts>
+//void expand_root(std::vector<tuple_node<Ts...>> nodes)
+//{
+//    for (size_t i = 0; i < nodes.size(); i++)
+//    {
+//        curr_iter = i;
+//        // still need to figure out how to pass i to the first recursive call
+//        std::apply([&](auto &... tuple_items) { expand_nested(tuple_items...); }, nodes[i].tupl);
+//    }
+//    curr_iter = 0;
+//}
+
 void imgui_update()
 {
     imgui_new_frame();
@@ -516,95 +1008,223 @@ void imgui_update()
         CloseHandle(ui_request_handle);
     }
 
-    if (ImGui::CollapsingHeader("Render items"))
-    {
-        bool node_expanded = false;
-        bool inner_node_expanded = false;
-        float indentation = 10.f;
+    imgui_nested_tree();
 
-        for (int i = 0; i < render_items.size(); i++)
-        {
-            ImGui::PushID(i);
-            node_expanded = ImGui::TreeNodeExV("", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
-            ImGui::SameLine();
-            ImGui::PopID();
+    //if (ImGui::CollapsingHeader("Test nested tree"))
+    //{
+    //    float indentation = 10.f;
+    //    std::vector<tuple_node<tree_item<render_item>, tree_item<submesh>>> nodes;
 
-            if (ImGui::Selectable(render_items[i].name.c_str(), render_items[i].is_selected))
-            {
-                if (!ImGui::GetIO().KeyCtrl) // Clear selection when CTRL is not held
-                {
-                    for (size_t k = 0; k < render_items.size(); k++)
-                    {
-                        render_items[k].is_selected = false;
-                        for (size_t l = 0; l < render_items[k].meshes.submeshes.size(); l++)
-                        {
-                            render_items[k].meshes.submeshes[l].is_selected = false;
-                        }
-                    }
-                }
+    //    for (size_t i = 0; i < render_items.size(); i++)
+    //    {
+    //        // render item
+    //        tree_item<render_item> tree_ri;
+    //        tree_ri.inner_node_callback = [&](render_item ri) {
+    //            ImGui::Indent(indentation);
+    //            ImGui::Text("ID: %d", ri.id);
+    //            ImGui::Text("Instance count: %d", ri.instance_count);
+    //            ImGui::Text("Vertices total: %d", ri.vertex_count);
+    //            ImGui::Text("Indices total: %d", ri.index_count);
+    //            ImGui::NewLine();
 
-                for (size_t k = 0; k < render_items[i].meshes.submeshes.size(); k++)
-                {
-                    render_items[i].meshes.submeshes[k].is_selected = true;
-                }
-                render_items[i].is_selected = true;
-            }
+    //            for (UINT j = 0; j < ri.instance_count; j++)
+    //            {
+    //                float inst_pos[4];
+    //                inst_pos[0] = ri.instance_data[j].world._41;
+    //                inst_pos[1] = ri.instance_data[j].world._42;
+    //                inst_pos[2] = ri.instance_data[j].world._43;
+    //                inst_pos[3] = ri.instance_data[j].world._44;
+    //                ImGui::Text("Instance %d postition:", j);
 
-            if (node_expanded)
-            {
-                float ri_pos[4];
-                ri_pos[0] = render_items[i].world._41;
-                ri_pos[1] = render_items[i].world._42;
-                ri_pos[2] = render_items[i].world._43;
-                ri_pos[3] = render_items[i].world._44;
-                ImGui::Indent(indentation);
-                ImGui::Text("ID: %d", render_items[i].id);
-                ImGui::Text("Instance count: %d", render_items[i].instance_count);
-                ImGui::Text("Vertices total: %d", render_items[i].vertex_count);
-                ImGui::Text("Indices total: %d", render_items[i].index_count);
-                ImGui::InputFloat4("Position ", ri_pos, 3);
-                ImGui::NewLine();
-                ImGui::Text("Submeshes:");
-                ImGui::Indent(indentation);
+    //                // The empty space is to work around a bug in DearImGui.
+    //                // if you pass an empty string to InputFloat4 it will break.
+    //                ImGui::InputFloat4(" ", inst_pos, 3);
+    //            }
 
-                for (int j = 0; j < render_items[i].meshes.submeshes.size(); j++)
-                {
-                    ImGui::PushID(j);
-                    inner_node_expanded = ImGui::TreeNodeExV("", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
-                    ImGui::SameLine();
+    //            ImGui::NewLine();
+    //        };
 
-                    if (ImGui::Selectable(render_items[i].meshes.submeshes[j].name.c_str(), render_items[i].meshes.submeshes[j].is_selected))
-                    {
-                        if (!ImGui::GetIO().KeyCtrl) // Clear selection when CTRL is not held
-                        {
-                            for (size_t k = 0; k < render_items.size(); k++)
-                            {
-                                render_items[k].is_selected = false;
-                                for (size_t l = 0; l < render_items[k].meshes.submeshes.size(); l++)
-                                {
-                                    render_items[k].meshes.submeshes[l].is_selected = false;
-                                }
-                            }
-                        }
-                        render_items[i].meshes.submeshes[j].is_selected = true;
-                    }
+    //        tree_ri.outer_node_callback = [&](std::vector<render_item> *ri, int i) {
+    //            if (ImGui::Selectable(ri->at(i).name.c_str(), ri->at(i).is_selected))
+    //            {
+    //                if (!ImGui::GetIO().KeyCtrl) // Clear selection when CTRL is not held
+    //                {
+    //                    for (size_t k = 0; k < ri->size(); k++)
+    //                    {
+    //                        ri->at(k).is_selected = false;
+    //                        for (size_t l = 0; l < ri->at(k).meshes.submeshes.size(); l++)
+    //                        {
+    //                            ri->at(k).meshes.submeshes[l].is_selected = false;
+    //                        }
+    //                    }
+    //                }
 
-                    ImGui::PopID();
-                    if (inner_node_expanded)
-                    {
-                        ImGui::Indent(indentation);
-                        ImGui::Text("Vertices: %d", render_items[i].meshes.submeshes[j].vertex_count);
-                        ImGui::Text("Indices: %d", render_items[i].meshes.submeshes[j].index_count);
-                        ImGui::Unindent(indentation);
-                        ImGui::TreePop();
-                    }
-                }
-                ImGui::Unindent(indentation);
-                ImGui::Unindent(indentation);
-                ImGui::TreePop();
-            }
-        }
-    }
+    //                for (size_t k = 0; k < ri->at(i).meshes.submeshes.size(); k++)
+    //                {
+    //                    ri->at(i).meshes.submeshes[k].is_selected = true;
+    //                }
+    //                ri->at(i).is_selected = true;
+    //            }
+    //        };
+    //        tree_ri.items = &render_items;
+
+    //        // submesh
+    //        tree_item<submesh> tree_submesh;
+    //        tree_submesh.inner_node_callback = [&](submesh sm) {
+    //            ImGui::Indent(indentation);
+    //            ImGui::Text("Vertices: %d", sm.vertex_count);
+    //            ImGui::Text("Indices: %d", sm.index_count);
+    //            ImGui::Unindent(indentation);
+    //        };
+
+    //        tree_submesh.outer_node_callback = [&](std::vector<submesh> *sm, int i) {
+    //            if (ImGui::Selectable(sm->at(i).name.c_str(), sm->at(i).is_selected))
+    //            {
+    //                if (!ImGui::GetIO().KeyCtrl) // Clear selection when CTRL is not held
+    //                {
+    //                    for (size_t k = 0; k < sm->size(); k++)
+    //                    {
+    //                        sm->at(k).is_selected = false;
+    //                    }
+    //                }
+    //                sm->at(i).is_selected = true;
+    //            }
+    //        };
+    //        tree_submesh.items = &render_items[i].meshes.submeshes;
+
+    //        tuple_node<tree_item<render_item>, tree_item<submesh>> node;
+    //        node.tupl = std::make_tuple(tree_ri, tree_submesh);
+
+    //        nodes.push_back(node);
+    //    }
+
+    //    expand_root(nodes);
+    //}
+
+    //if (ImGui::CollapsingHeader("Render items"))
+    //{
+    //    bool renderitems_node_expanded = false;
+    //    bool submeshes_node_expanded = false;
+    //    bool instances_node_expanded = false;
+    //    float indentation = 10.f;
+
+    //    for (int i = 0; i < render_items.size(); i++)
+    //    {
+    //        ImGui::PushID(i);
+    //        renderitems_node_expanded = ImGui::TreeNodeExV("", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
+    //        ImGui::SameLine();
+    //        ImGui::PopID();
+
+    //        if (ImGui::Selectable(render_items[i].name.c_str(), render_items[i].is_selected))
+    //        {
+    //            if (!ImGui::GetIO().KeyCtrl) // Clear selection when CTRL is not held
+    //            {
+    //                for (size_t k = 0; k < render_items.size(); k++)
+    //                {
+    //                    render_items[k].is_selected = false;
+    //                    for (size_t l = 0; l < render_items[k].meshes.submeshes.size(); l++)
+    //                    {
+    //                        render_items[k].meshes.submeshes[l].is_selected = false;
+    //                    }
+    //                }
+    //            }
+
+    //            for (size_t k = 0; k < render_items[i].meshes.submeshes.size(); k++)
+    //            {
+    //                render_items[i].meshes.submeshes[k].is_selected = true;
+    //            }
+    //            render_items[i].is_selected = true;
+    //        }
+
+    //        if (renderitems_node_expanded)
+    //        {
+    //            ImGui::Indent(indentation);
+    //            ImGui::Text("ID: %d", render_items[i].id);
+    //            ImGui::Text("Instance count: %d", render_items[i].instance_count);
+    //            ImGui::Text("Vertices total: %d", render_items[i].vertex_count);
+    //            ImGui::Text("Indices total: %d", render_items[i].index_count);
+    //            ImGui::NewLine();
+
+    //            if (render_items[i].meshes.submeshes.size() > 0)
+    //            {
+    //                ImGui::Text("Submeshes:");
+    //                for (int j = 0; j < render_items[i].meshes.submeshes.size(); j++)
+    //                {
+    //                    ImGui::PushID(j);
+    //                    submeshes_node_expanded = ImGui::TreeNodeExV("", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
+    //                    ImGui::SameLine();
+
+    //                    if (ImGui::Selectable(render_items[i].meshes.submeshes[j].name.c_str(), render_items[i].meshes.submeshes[j].is_selected))
+    //                    {
+    //                        if (!ImGui::GetIO().KeyCtrl) // Clear selection when CTRL is not held
+    //                        {
+    //                            for (size_t k = 0; k < render_items.size(); k++)
+    //                            {
+    //                                render_items[k].is_selected = false;
+    //                                for (size_t l = 0; l < render_items[k].meshes.submeshes.size(); l++)
+    //                                {
+    //                                    render_items[k].meshes.submeshes[l].is_selected = false;
+    //                                }
+    //                            }
+    //                        }
+    //                        render_items[i].meshes.submeshes[j].is_selected = true;
+    //                    }
+
+    //                    ImGui::PopID();
+    //                    if (submeshes_node_expanded)
+    //                    {
+    //                        ImGui::Indent(indentation);
+    //                        ImGui::Text("Vertices: %d", render_items[i].meshes.submeshes[j].vertex_count);
+    //                        ImGui::Text("Indices: %d", render_items[i].meshes.submeshes[j].index_count);
+    //                        ImGui::Unindent(indentation);
+    //                        ImGui::TreePop();
+    //                    }
+    //                }
+    //            }
+
+    //            if (render_items[i].instance_count > 0)
+    //            {
+    //                ImGui::Text("Instances:");
+    //                for (UINT j = 0; j < render_items[i].instance_count; j++)
+    //                {
+    //                    bool is_instance_selected = false;
+    //                    ImGui::PushID(j*50);
+    //                    instances_node_expanded = ImGui::TreeNodeExV("", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
+    //                    ImGui::SameLine();
+    //                    ImGui::PopID();
+
+    //                    char buf[50];
+    //                    sprintf(buf, "Instance %d", j);
+    //                    if (render_items[i].selected_instance == j)
+    //                        is_instance_selected = true;
+
+    //                    if (ImGui::Selectable(buf, is_instance_selected))
+    //                    {
+    //                    }
+
+    //                    if (instances_node_expanded)
+    //                    {
+    //                        ImGui::Indent(indentation);
+    //                        ImGui::Text("Postition:", j);
+    //                        float inst_pos[4];
+    //                        inst_pos[0] = render_items[i].instance_data[j].world._41;
+    //                        inst_pos[1] = render_items[i].instance_data[j].world._42;
+    //                        inst_pos[2] = render_items[i].instance_data[j].world._43;
+    //                        inst_pos[3] = render_items[i].instance_data[j].world._44;
+    //                        // The empty space is to work around a bug in DearImGui.
+    //                        // if you pass an empty string to InputFloat4 it will break.
+    //                        ImGui::InputFloat4(" ", inst_pos, 3);
+    //                        ImGui::Unindent(indentation);
+    //                        ImGui::TreePop();
+    //                    }
+    //                }
+    //            }
+    //            ImGui::Unindent(indentation);
+    //            ImGui::Unindent(indentation);
+    //            ImGui::TreePop();
+    //        }
+    //    }
+    //}
 
     ImGui::End();
 
@@ -747,10 +1367,16 @@ extern "C" __declspec(dllexport) void wndproc(UINT msg, WPARAM wParam, LPARAM lP
 
                     is_orbiting = true;
 
-                    // translate cam position to origin
                     XMVECTOR start_cam_pos = cam.position;
-                    XMMATRIX to_origin = XMMatrixTranslationFromVector(-cam.position);
-                    cam.position = XMVector3Transform(cam.position, to_origin);
+                    // translate cam position to origin
+                    //XMMATRIX to_origin = XMMatrixTranslationFromVector(-cam.position);
+                    //cam.position = XMVector3Transform(cam.position, to_origin);
+
+                    // translate cam position to the target position
+                    // get direction vector from the camera position to the target position (position - point = direction)
+                    XMVECTOR cam_to_target_dir = orbit_target_pos - cam.position;
+                    // translate to target position (direction + point = point)
+                    cam.position = cam_to_target_dir + cam.position;
 
                     // rotate the camera direction
                     XMMATRIX to_yaw = XMMatrixRotationY(XMConvertToRadians(dx));

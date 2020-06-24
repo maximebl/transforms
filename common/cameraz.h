@@ -8,7 +8,7 @@ public:
     DirectX::XMVECTOR up;
     DirectX::XMVECTOR forward;
 
-    DirectX::XMVECTOR position = DirectX::XMVectorSet(0.f, 0.f, -10.f, 1.f);
+    DirectX::XMVECTOR position;
 
     float roll = 0.f;
     float pitch = 0.f;

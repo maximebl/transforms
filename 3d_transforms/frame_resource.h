@@ -49,15 +49,14 @@ struct render_item
 {
     render_item() = default;
 
-    bool is_selected = false;
     std::string name;
-    int id = -1;
-    mesh meshes;
     XMFLOAT4X4 world;
     std::vector<instance_data> instance_data;
-
+    size_t selected_instance = -1;
+    bool is_selected = false;
+    int id = -1;
     int cb_index = -1;
-    int num_frames_dirty = NUM_BACK_BUFFERS;
+    mesh meshes;
     D3D12_PRIMITIVE_TOPOLOGY topology = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 
     UINT instance_count = 0;
