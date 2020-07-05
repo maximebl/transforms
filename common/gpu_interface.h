@@ -123,7 +123,7 @@ public:
 class COMMON_API upload_buffer
 {
 public:
-    upload_buffer(ID3D12Device *device, UINT element_count, UINT element_byte_size, const char *name);
+    upload_buffer(ID3D12Device *device, size_t element_count, size_t element_byte_size, const char *name);
     ~upload_buffer();
     void copy_data(int elementIndex, const void *data);
 
@@ -131,5 +131,5 @@ public:
     ID3D12Resource *m_uploadbuffer = nullptr;
     UINT m_buffer_size = 0;
     BYTE *m_mapped_data = nullptr;
-    UINT m_element_byte_size = 0;
+    size_t m_element_byte_size = 0;
 };

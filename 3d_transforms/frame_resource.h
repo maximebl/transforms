@@ -1,7 +1,6 @@
 #pragma once
 #include <common.h>
 #include <gpu_interface.h>
-#include <unordered_map>
 
 using namespace DirectX;
 
@@ -37,12 +36,24 @@ class frame_resource : public frame_cmd
 {
 public:
     frame_resource() = default;
-    frame_resource(ID3D12Device *device, size_t frame_index, UINT element_count, UINT instance_count, UINT pass_count);
+    frame_resource(ID3D12Device *device, size_t frame_index, size_t element_count, size_t instance_count, size_t pass_count);
     ~frame_resource();
     upload_buffer *cb_objconstant_upload = nullptr;
     upload_buffer *sb_instancedata_upload = nullptr;
     upload_buffer *cb_passdata_upload = nullptr;
-    UINT cb_objconstants_size = 0;
+    size_t cb_objconstants_size = 0;
+};
+
+struct instance
+{
+    std::string name;
+    bool is_selected = false;
+    instance_data shader_data;
+    float translation[3] = {};
+    float scale[3] = {};
+    float right_angle = 0.f;
+    float up_angle = 0.f;
+    float forward_angle = 0.f;
 };
 
 struct render_item
@@ -50,16 +61,15 @@ struct render_item
     render_item() = default;
 
     std::string name;
-    XMFLOAT4X4 world;
-    std::vector<instance_data> instance_data;
-    size_t selected_instance = -1;
     bool is_selected = false;
+    XMFLOAT4X4 world;
     int id = -1;
     int cb_index = -1;
-    mesh meshes;
     D3D12_PRIMITIVE_TOPOLOGY topology = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 
-    UINT instance_count = 0;
+    mesh meshes;
+    std::vector<instance> instances;
+
     UINT index_count = 0;
     UINT vertex_count = 0;
     UINT start_index_location = 0;

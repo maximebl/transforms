@@ -5,7 +5,7 @@
 #include <imgui_helpers.h>
 #include "frame_resource.h"
 #include <vector>
-#include <unordered_map>
+#include <map>
 #include <algorithm>
 #include "shlwapi.h"
 #include "math_helpers.h"
@@ -23,9 +23,10 @@ extern "C" __declspec(dllexport) void wndproc(UINT msg, WPARAM wParam, LPARAM lP
 extern "C" __declspec(dllexport) bool initialize();
 
 internal void init_pipeline();
-internal void create_render_items();
+internal void create_render_item(std::string name, std::wstring mesh_name, int id);
 internal void draw_render_items(ID3D12GraphicsCommandList *cmd_list, const std::vector<render_item> *render_items);
 internal void update_camera();
+internal void update_orbit(float x, float y);
 
 // command objects
 internal device_resources *dr = nullptr;
@@ -45,9 +46,12 @@ enum views
 };
 internal views shading;
 internal ID3D12PipelineState *flat_color_pso = nullptr;
+internal ID3D12PipelineState *line_pso = nullptr;
 internal ID3D12PipelineState *wireframe_pso = nullptr;
 
 // Shader data
+internal ID3DBlob *debugfx_blob_vs = nullptr;
+internal ID3DBlob *debugfx_blob_ps = nullptr;
 internal ID3DBlob *perspective_blob_vs = nullptr;
 internal ID3DBlob *perspective_blob_ps = nullptr;
 
@@ -63,6 +67,7 @@ internal bool show_demo = true;
 internal bool show_main = true;
 internal bool show_debug = true;
 internal bool show_perf = true;
+internal bool show_selection = true;
 
 // Render items data
 #define MAX_RENDER_ITEMS 10
@@ -73,12 +78,41 @@ internal std::vector<render_item> render_items;
 // Geometry
 internal std::unordered_map<std::wstring, mesh> geometries;
 
+// Debug effects
+#define MAX_DEBUG_LINES 1000
+upload_buffer *debug_lines_upload = nullptr;
+D3D12_VERTEX_BUFFER_VIEW debug_lines_vbv = {};
+struct debug_line
+{
+    position_color start;
+    position_color end;
+};
+internal debug_line orbit_line;
+internal std::vector<debug_line *> debug_lines;
+internal void draw_debug_lines(ID3D12GraphicsCommandList *cmd_list, const std::vector<debug_line *> *debug_lines);
+bool is_line_buffer_ready = false;
+
 // Camera
 internal pass_data pass;
-internal float theta = 1.5f * XM_PI; // 270 degrees (3 * PI) / 2
-internal float phi = XM_PIDIV4;      // 45 degrees  (PI / 4)
 internal float radius = 5.0f;
 internal ImVec2 last_mouse_pos;
+internal float dx_angle = 0.f;
+internal float dy_angle = 0.f;
+
+XMVECTOR camera_forward = XMVectorSet(0.f, 0.f, 1.f, 0.f);
+XMVECTOR camera_right = XMVectorSet(1.f, 0.f, 0.f, 0.f);
+XMVECTOR camera_up = XMVectorSet(0.f, 1.f, 0.f, 0.f);
+bool is_orbiting = false;
+XMVECTOR orbit_target_pos = XMVectorSet(0.f, 0.f, 0.f, 1.f);
+
+// Selection
+internal instance *current_instance;
+internal float translation[3];
+internal float scale[3];
+internal float right_angle = 0.f;
+internal float up_angle = 0.f;
+internal float forward_angle = 0.f;
+internal std ::vector<render_item> selected_render_items;
 
 extern "C" __declspec(dllexport) bool initialize()
 {
@@ -90,6 +124,10 @@ extern "C" __declspec(dllexport) bool initialize()
 
     imgui_init(dr->device);
 
+    if (!compile_shader(L"..\\..\\3d_transforms\\shaders\\debug_fx.hlsl", L"VS", shader_type::vertex, &debugfx_blob_vs))
+        return false;
+    if (!compile_shader(L"..\\..\\3d_transforms\\shaders\\debug_fx.hlsl", L"PS", shader_type::pixel, &debugfx_blob_ps))
+        return false;
     if (!compile_shader(L"..\\..\\3d_transforms\\shaders\\perspective.hlsl", L"VS", shader_type::vertex, &perspective_blob_vs))
         return false;
     if (!compile_shader(L"..\\..\\3d_transforms\\shaders\\perspective.hlsl", L"PS", shader_type::pixel, &perspective_blob_ps))
@@ -149,6 +187,11 @@ extern "C" __declspec(dllexport) bool initialize()
     D3D12_GRAPHICS_PIPELINE_STATE_DESC default_pso_desc = dr->create_default_pso(&input_elem_descs, perspective_blob_vs, perspective_blob_ps);
     default_pso_desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     hr = device->CreateGraphicsPipelineState(&default_pso_desc, IID_PPV_ARGS(&flat_color_pso));
+    ASSERT(SUCCEEDED(hr));
+
+    default_pso_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+    default_pso_desc.VS = {debugfx_blob_vs->GetBufferPointer(), debugfx_blob_vs->GetBufferSize()};
+    hr = device->CreateGraphicsPipelineState(&default_pso_desc, IID_PPV_ARGS(&line_pso));
     ASSERT(SUCCEEDED(hr));
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC wireframe_pso_desc = dr->create_default_pso(&input_elem_descs, perspective_blob_vs, perspective_blob_ps);
@@ -248,7 +291,11 @@ extern "C" __declspec(dllexport) bool initialize()
                      sizeof(WORD), bunny_indices.size(), (void *)bunny_indices.data(),
                      &bunny);
     geometries[mesh_name] = bunny;
-    create_render_items();
+
+    for (int i = 0; i < NUM_RENDER_ITEMS; i++)
+    {
+        create_render_item("my cool bunny", mesh_name, i);
+    }
 
     cmdlist->Close();
     dr->cmd_queue->ExecuteCommandLists(1, (ID3D12CommandList *const *)&cmdlist);
@@ -256,44 +303,91 @@ extern "C" __declspec(dllexport) bool initialize()
     return true;
 }
 
-internal void create_render_items()
+internal void create_render_item(std::string name, std::wstring mesh_name, int id)
 {
-    for (int i = 0; i < NUM_RENDER_ITEMS; i++)
+    render_item ri;
+    ri.meshes = geometries[mesh_name];
+    ri.topology = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    ri.cb_index = id;
+    ri.id = id;
+    ri.vertex_count = ri.meshes.vertex_count;
+    ri.index_count = ri.meshes.index_count;
+    ri.name = name;
+    XMMATRIX world = XMMatrixIdentity();
+    float amount = id * 3.f;
+    XMMATRIX t = XMMatrixTranslation(amount, amount, amount);
+    world = world * t;
+    XMStoreFloat4x4(&ri.world, world);
+
+    // create instance data
+    for (int i = 0; i < MAX_INSTANCE_COUNT_PER_OBJECT; i++)
     {
-        render_item ri;
-        ri.meshes = geometries[L"bunny"];
-        ri.topology = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-        ri.cb_index = i;
-        ri.id = i;
-        ri.vertex_count = ri.meshes.vertex_count;
-        ri.index_count = ri.meshes.index_count;
-        ri.instance_count = MAX_INSTANCE_COUNT_PER_OBJECT;
-        ri.name = "my cool cube";
+        instance inst;
+        inst.name = "instance_" + std::to_string(i);
         XMMATRIX world = XMMatrixIdentity();
-        float amount = i * 3.f;
-        XMMATRIX t = XMMatrixTranslation(amount, amount, amount);
-        world = world * t;
-        XMStoreFloat4x4(&ri.world, world);
 
-        // create instance data
-        for (int i = 0; i < MAX_INSTANCE_COUNT_PER_OBJECT; i++)
-        {
-            ri.instance_data.resize(MAX_INSTANCE_COUNT_PER_OBJECT);
+        XMVECTOR right = XMVectorSet(1.f, 0.f, 0.f, 0.f);
+        XMVECTOR right_rot_quat = XMQuaternionRotationAxis(right, XMConvertToRadians(right_angle));
 
-            XMMATRIX world = XMMatrixIdentity();
-            float amount = i * 3.f;
-            XMMATRIX t = XMMatrixTranslation(amount, amount, amount);
-            world = world * t;
-            XMStoreFloat4x4(&ri.instance_data[i].world, world);
-        }
-        render_items.push_back(ri);
+        XMVECTOR up = XMVectorSet(0.f, 1.f, 0.f, 0.f);
+        XMVECTOR up_rot_quat = XMQuaternionRotationAxis(up, XMConvertToRadians(up_angle));
+
+        XMVECTOR forward = XMVectorSet(0.f, 0.f, 1.f, 0.f);
+        XMVECTOR forward_rot_quat = XMQuaternionRotationAxis(forward, XMConvertToRadians(forward_angle));
+
+        XMVECTOR rot_quat = XMQuaternionMultiply(forward_rot_quat, XMQuaternionMultiply(right_rot_quat, up_rot_quat));
+        XMMATRIX rot_mat = XMMatrixRotationQuaternion(rot_quat);
+
+        inst.scale[0] = 1.f;
+        inst.scale[1] = 1.f;
+        inst.scale[2] = 1.f;
+        XMMATRIX scale_mat = XMMatrixScaling(inst.scale[0], inst.scale[1], inst.scale[2]);
+
+        inst.translation[0] = i * 3.f;
+        inst.translation[1] = i * 3.f;
+        inst.translation[2] = i * 3.f;
+        XMMATRIX translation_mat = XMMatrixTranslation(inst.translation[0], inst.translation[1], inst.translation[2]);
+        XMMATRIX srt = scale_mat * rot_mat * translation_mat;
+        world = world * srt;
+
+        XMStoreFloat4x4(&inst.shader_data.world, world);
+
+        ri.instances.push_back(inst);
+    }
+    render_items.push_back(ri);
+}
+
+internal void draw_debug_lines(ID3D12GraphicsCommandList *cmd_list, std::vector<debug_line *> *debug_lines)
+{
+    if (!is_line_buffer_ready)
+    {
+        debug_lines->push_back(&orbit_line);
+        size_t line_stride = sizeof(position_color);
+        size_t lines_byte_size = line_stride * MAX_DEBUG_LINES;
+        debug_lines_upload = new upload_buffer(device, 1, lines_byte_size, "debug_lines");
+
+        debug_lines_vbv = {};
+        debug_lines_vbv.BufferLocation = debug_lines_upload->m_uploadbuffer->GetGPUVirtualAddress();
+        debug_lines_vbv.SizeInBytes = (UINT)lines_byte_size;
+        debug_lines_vbv.StrideInBytes = (UINT)line_stride;
+        is_line_buffer_ready = true;
+    }
+
+    if (debug_lines->size() > 0)
+    {
+        debug_lines_upload->copy_data(0, (void *)*debug_lines->data());
+
+        cmdlist->SetPipelineState(line_pso);
+        cmdlist->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
+        cmdlist->IASetVertexBuffers(0, 1, &debug_lines_vbv);
+        cmdlist->DrawInstanced(2, 1, 0, 0);
     }
 }
 
 internal void draw_render_items(ID3D12GraphicsCommandList *cmd_list, const std::vector<render_item> *render_items)
 {
-    UINT cb_size = frame->cb_objconstants_size;
-    UINT64 cb_resource_address = frame->cb_objconstant_upload->m_uploadbuffer->GetGPUVirtualAddress();
+    size_t cb_size = frame->cb_objconstants_size;
+    size_t cb_resource_address = frame->cb_objconstant_upload->m_uploadbuffer->GetGPUVirtualAddress();
 
     for (render_item ri : *render_items)
     {
@@ -303,10 +397,9 @@ internal void draw_render_items(ID3D12GraphicsCommandList *cmd_list, const std::
 
         cmd_list->SetGraphicsRootShaderResourceView(2, frame->sb_instancedata_upload->m_uploadbuffer->GetGPUVirtualAddress());
 
-        UINT cb_offset = ri.cb_index * cb_size;
+        size_t cb_offset = ri.cb_index * cb_size;
         cmd_list->SetGraphicsRootConstantBufferView(1, cb_resource_address + cb_offset);
-        //cmd_list->DrawInstanced(ri.vertex_count, ri.instance_count, ri.start_index_location, ri.base_vertex_location);
-        cmd_list->DrawIndexedInstanced(ri.index_count, ri.instance_count, ri.start_index_location, ri.base_vertex_location, 0);
+        cmd_list->DrawIndexedInstanced(ri.index_count, (UINT)ri.instances.size(), ri.start_index_location, ri.base_vertex_location, 0);
     }
 }
 
@@ -371,6 +464,7 @@ DWORD __stdcall pick_and_load_model(void *param)
 
         geometries[mesh_name] = new_mesh;
 
+
         UINT id = (UINT)render_items.size();
         char id_str[12];
         sprintf(id_str, "_%u", id);
@@ -378,24 +472,55 @@ DWORD __stdcall pick_and_load_model(void *param)
         wcstombs(ri_name, mesh_name, 100);
         strcat(ri_name, id_str);
 
-        render_item ri;
-        ri.meshes = geometries[mesh_name];
-        ri.topology = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-        ri.cb_index = id;
-        ri.id = id;
-        ri.vertex_count = ri.meshes.vertex_count;
-        ri.index_count = ri.meshes.index_count;
-        ri.instance_count = MAX_INSTANCE_COUNT_PER_OBJECT;
-        ri.name = _strdup(ri_name);
-        XMStoreFloat4x4(&ri.world, XMMatrixIdentity());
+        create_render_item(ri_name, mesh_name, id);
 
-        // create instance data
-        for (int i = 0; i < MAX_INSTANCE_COUNT_PER_OBJECT; i++)
-        {
-            ri.instance_data.resize(MAX_INSTANCE_COUNT_PER_OBJECT);
-            XMStoreFloat4x4(&ri.instance_data[i].world, XMMatrixIdentity());
-        }
-        render_items.push_back(ri);
+        //render_item ri;
+        //ri.meshes = geometries[mesh_name];
+        //ri.topology = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+        //ri.cb_index = id;
+        //ri.id = id;
+        //ri.vertex_count = ri.meshes.vertex_count;
+        //ri.index_count = ri.meshes.index_count;
+        //ri.name = _strdup(ri_name);
+        //XMStoreFloat4x4(&ri.world, XMMatrixIdentity());
+
+        //// create instance data
+        //ri.instances.resize(MAX_INSTANCE_COUNT_PER_OBJECT);
+
+        //for (int i = 0; i < MAX_INSTANCE_COUNT_PER_OBJECT; i++)
+        //{
+        //    instance *inst = &ri.instances[i];
+        //    inst->name = "instance_" + std::to_string(i);
+        //    XMVECTOR right = XMVectorSet(1.f, 0.f, 0.f, 0.f);
+        //    XMVECTOR right_rot_quat = XMQuaternionRotationAxis(right, XMConvertToRadians(right_angle));
+
+        //    XMVECTOR up = XMVectorSet(0.f, 1.f, 0.f, 0.f);
+        //    XMVECTOR up_rot_quat = XMQuaternionRotationAxis(up, XMConvertToRadians(up_angle));
+
+        //    XMVECTOR forward = XMVectorSet(0.f, 0.f, 1.f, 0.f);
+        //    XMVECTOR forward_rot_quat = XMQuaternionRotationAxis(forward, XMConvertToRadians(forward_angle));
+
+        //    XMVECTOR rot_quat = XMQuaternionMultiply(forward_rot_quat, XMQuaternionMultiply(right_rot_quat, up_rot_quat));
+        //    XMMATRIX rot_mat = XMMatrixRotationQuaternion(rot_quat);
+
+        //    XMMATRIX scale_mat = XMMatrixScaling(1.f, 1.f, 1.f);
+        //    inst->scale[0] = 1.f;
+        //    inst->scale[1] = 1.f;
+        //    inst->scale[2] = 1.f;
+
+        //    float start_offset = i * 3.f;
+        //    XMMATRIX translation_mat = XMMatrixTranslation(start_offset, start_offset, start_offset);
+        //    inst->translation[0] = start_offset;
+        //    inst->translation[1] = start_offset;
+        //    inst->translation[2] = start_offset;
+
+        //    XMMATRIX srt = translation_mat * rot_mat * scale_mat;
+        //    XMMATRIX world = XMMatrixIdentity();
+        //    world = world * srt;
+
+        //    XMStoreFloat4x4(&inst->shader_data.world, world);
+        //}
+        //render_items.push_back(ri);
 
         ui_requests_cmdlist->Close();
         dr->cmd_queue->ExecuteCommandLists(1, (ID3D12CommandList *const *)&ui_requests_cmdlist);
@@ -403,40 +528,51 @@ DWORD __stdcall pick_and_load_model(void *param)
     return 0;
 }
 
-XMVECTOR camera_dir = XMVectorSet(0.f, 0.f, 1.f, 0.f);
-XMVECTOR camera_right = XMVectorSet(1.f, 0.f, 0.f, 0.f);
-XMVECTOR camera_up = XMVectorSet(0.f, 1.f, 0.f, 0.f);
-XMVECTOR camera_target = XMVectorSet(0.f, 0.f, 0.f, 1.f);
-float angle = 0.f;
-bool is_orbiting = false;
-XMVECTOR orbit_target_pos = XMVectorSet(0.f, 0.f, 0.f, 1.f);
-
 internal void update_camera()
 {
     ImGui::SliderFloat4("Right direction", camera_right.m128_f32, -1.f, 1.f);
+    ImGui::SameLine();
+    if (ImGui::Button("Reset right direction"))
+        camera_right = XMVectorSet(1.f, 0.f, 0.f, 0.f);
+
     ImGui::SliderFloat4("Up direction", camera_up.m128_f32, -1.f, 1.f);
-    ImGui::SliderFloat4("Forward direction", camera_dir.m128_f32, -1.f, 1.f);
+    ImGui::SameLine();
+    if (ImGui::Button("Reset up direction"))
+        camera_up = XMVectorSet(0.f, 1.f, 0.f, 0.f);
+
+    ImGui::SliderFloat4("Forward direction", camera_forward.m128_f32, -1.f, 1.f);
+    ImGui::SameLine();
+    if (ImGui::Button("Reset forward direction"))
+        camera_forward = XMVectorSet(0.f, 0.f, 1.f, 0.f);
+
     ImGui::SliderFloat4("Camera position", cam.position.m128_f32, -150.f, 150.f);
+    ImGui::SameLine();
+    if (ImGui::Button("Reset camera position"))
+    {
+        cam.position = XMVectorZero();
+    }
+
     ImGui::SliderFloat("Camera roll", &cam.roll, -180.f, +180.f);
     ImGui::SliderFloat("Camera pitch", &cam.pitch, -180.f, +180.f);
     ImGui::SliderFloat("Camera yaw", &cam.yaw, -180.f, +180.f);
-    ImGui::SliderFloat("Angle", &angle, 0, 180);
     ImGui::Checkbox("is orbiting", &is_orbiting);
 
-    for (int i = 0; i < render_items.size(); i++)
-    {
-        render_item *ri = &render_items[i];
-        if (ri->is_selected == true)
-        {
-            orbit_target_pos.m128_f32[0] = ri->world._41;
-            orbit_target_pos.m128_f32[1] = ri->world._42;
-            orbit_target_pos.m128_f32[2] = ri->world._43;
-            orbit_target_pos.m128_f32[3] = ri->world._44;
-            ImGui::SliderFloat4("Orbit target position", orbit_target_pos.m128_f32, -50.f, 50.f);
-        }
-    }
+    camera_forward = XMVector3Normalize(camera_forward);
+    // scale camera_dir by 15 units
+    XMVECTOR scaled_cam_dir = XMVectorScale(camera_forward, 15.f);
+    XMVECTOR default_orbit_target = cam.position + scaled_cam_dir;
+    orbit_target_pos = default_orbit_target;
 
-    camera_dir = XMVector3Normalize(camera_dir);
+    for (render_item &ri : render_items)
+        for (instance &inst : ri.instances)
+            if (inst.is_selected == true)
+            {
+                orbit_target_pos.m128_f32[0] = inst.shader_data.world._41;
+                orbit_target_pos.m128_f32[1] = inst.shader_data.world._42;
+                orbit_target_pos.m128_f32[2] = inst.shader_data.world._43;
+                orbit_target_pos.m128_f32[3] = inst.shader_data.world._44;
+                ImGui::SliderFloat4("Orbit target position", orbit_target_pos.m128_f32, -50.f, 50.f);
+            }
 
     XMVECTOR s = XMVectorReplicate(0.02f);
     if (GetAsyncKeyState('E'))
@@ -451,11 +587,11 @@ internal void update_camera()
 
     if (GetAsyncKeyState('W'))
     {
-        cam.position = XMVectorMultiplyAdd(s, camera_dir, cam.position);
+        cam.position = XMVectorMultiplyAdd(s, camera_forward, cam.position);
     }
     if (GetAsyncKeyState('S'))
     {
-        cam.position = XMVectorMultiplyAdd(-s, camera_dir, cam.position);
+        cam.position = XMVectorMultiplyAdd(-s, camera_forward, cam.position);
     }
     if (GetAsyncKeyState('A'))
     {
@@ -466,15 +602,15 @@ internal void update_camera()
         cam.position = XMVectorMultiplyAdd(s, camera_right, cam.position);
     }
 
-    camera_dir = XMVector3Normalize(camera_dir);
-    // The order of these 2 matters
-    camera_right = XMVector3Cross(camera_up, camera_dir);
-    camera_up = XMVector3Normalize(XMVector3Cross(camera_dir, camera_right));
+    camera_up = XMVector3Normalize(camera_up);
+    camera_forward = XMVector3Normalize(camera_forward);
+    camera_right = XMVector3Cross(camera_up, camera_forward);
+    camera_up = XMVector3Normalize(XMVector3Cross(camera_forward, camera_right));
 
     // Camera translation
     float x = -XMVectorGetX(XMVector3Dot(camera_right, cam.position));
     float y = -XMVectorGetX(XMVector3Dot(camera_up, cam.position));
-    float z = -XMVectorGetX(XMVector3Dot(camera_dir, cam.position));
+    float z = -XMVectorGetX(XMVector3Dot(camera_forward, cam.position));
 
     XMMATRIX T;
     T.r[0] = camera_right;
@@ -483,7 +619,7 @@ internal void update_camera()
     T.r[1] = camera_up;
     T.r[1].m128_f32[3] = y;
 
-    T.r[2] = camera_dir;
+    T.r[2] = camera_forward;
     T.r[2].m128_f32[3] = z;
 
     T.r[3] = XMVectorSet(0.f, 0.f, 0.f, 1.f);
@@ -499,143 +635,16 @@ internal void update_camera()
     frame->cb_passdata_upload->copy_data(0, (void *)&pass);
 }
 
-struct sub_thing
-{
-    bool is_selected = false;
-    std::string name;
-};
-struct some_int
-{
-    std::string name;
-    int value;
-    bool is_selected = false;
-    std::vector<sub_thing> subthings;
-};
-struct some_float
-{
-    std::string name;
-    float value;
-    bool is_selected = false;
-    std::vector<sub_thing> subthings;
-};
-struct some_double
-{
-    std::string name;
-    double value;
-    bool is_selected = false;
-    std::vector<sub_thing> subthings;
-};
-
-std::vector<some_float> int_items;
-std::vector<some_int> int_items2;
-std::vector<some_float> float_items;
-std::vector<some_float> float_items2;
-std::vector<some_float> float_items3;
-std::vector<some_float> float_items4;
-std::vector<some_float> float_items5;
-std::vector<some_float> float_items6;
-std::vector<some_double> double_items;
-std::vector<some_double> double_items2;
-std::vector<some_double> double_items3;
-std::vector<some_double> double_items4;
-bool first_pass = true;
-sub_thing first_sub;
-sub_thing second_sub;
-some_int first;
-some_float first_else;
-
-void prep_data()
-{
-    // ints
-    some_float int1;
-    int1.name = "int_items: first int";
-    int1.is_selected = false;
-    int1.value = 0;
-    int_items.push_back(int1);
-
-    some_int int2;
-    int2.name = "int_items2: second int";
-    int2.is_selected = false;
-    int2.value = 1;
-    int_items2.push_back(int2);
-
-    // floats
-    some_float float1;
-    float1.name = "float_items: first float";
-    float1.is_selected = false;
-    float1.value = 0.0f;
-    float_items.push_back(float1);
-
-    //some_float float2;
-    //float2.name = "float_items: second float";
-    //float2.is_selected = false;
-    //float2.value = 1.0f;
-    //float_items.push_back(float2);
-
-    some_float float3;
-    float3.name = "float_items2: first float";
-    float3.is_selected = false;
-    float3.value = 0.0f;
-    float_items2.push_back(float3);
-
-    some_float float4;
-    float4.name = "float_items3: second float";
-    float4.is_selected = false;
-    float4.value = 1.0f;
-    float_items3.push_back(float4);
-
-    some_float float5;
-    float5.name = "float_items4: first float";
-    float5.is_selected = false;
-    float5.value = 1.0f;
-    float_items4.push_back(float5);
-
-    some_float float6;
-    float6.name = "float_items5: first float";
-    float6.is_selected = false;
-    float6.value = 1.0f;
-    float_items5.push_back(float6);
-
-    some_float float7;
-    float7.name = "float_items6: first float";
-    float7.is_selected = false;
-    float7.value = 1.0f;
-    float_items6.push_back(float7);
-
-    // doubles
-    some_double double1;
-    double1.name = "double_items: first double";
-    double1.is_selected = false;
-    double1.value = 1.0;
-    double_items.push_back(double1);
-
-    some_double double2;
-    double2.name = "double_items: second double";
-    double2.is_selected = false;
-    double2.value = 2.0;
-    double_items.push_back(double2);
-
-    some_double double3;
-    double3.name = "double_items2: first double";
-    double3.is_selected = false;
-    double3.value = 1.0;
-    double_items2.push_back(double3);
-
-    some_double double4;
-    double4.name = "double_items2: second double";
-    double4.is_selected = false;
-    double4.value = 2.0;
-    double_items2.push_back(double4);
-}
-
 struct tree_item
 {
     bool *is_selected;
     std::string name;
-    std::vector<tree_item> children;
-    std::function<void()> on_expand_callback;
-    std::function<void(bool *)> on_select_callback;
+    tree_item *parent;
+    std::map<std::string, std::vector<tree_item>> children;
+    std::function<void(tree_item *)> on_expand_callback;
+    std::function<void(tree_item *)> on_select_callback;
 };
+std::vector<tree_item> selected_items;
 
 // recursive function to handle nested tree items
 void expand_nested(tree_item ti)
@@ -643,17 +652,13 @@ void expand_nested(tree_item ti)
     bool is_expanded = ImGui::TreeNodeExV((void *)nullptr, ImGuiTreeNodeFlags_FramePadding, "", nullptr);
     ImGui::SameLine();
     if (ImGui::Selectable(ti.name.c_str(), *ti.is_selected))
-        ti.on_select_callback(ti.is_selected);
+    {
+        ti.on_select_callback(&ti);
+    }
 
     if (is_expanded)
     {
-        ti.on_expand_callback(); // render the ImGui content for this tree item
-        for (size_t j = 0; j < ti.children.size(); j++)
-        {
-            ImGui::PushID((int)j);
-            expand_nested(ti.children[j]); // recursively render the ImGui content for the nested tree items
-            ImGui::PopID();
-        }
+        ti.on_expand_callback(&ti); // render the ImGui content for this tree item
         ImGui::TreePop();
     }
 }
@@ -662,341 +667,174 @@ void imgui_nested_tree()
 {
     if (ImGui::CollapsingHeader("Render items"))
     {
-        if (first_pass)
-        {
-            prep_data();
-            first_pass = false;
-        }
-
-        tree_item tree_int;
-        tree_int.name = int_items[0].name;
-        tree_int.is_selected = &int_items[0].is_selected;
-        tree_int.on_expand_callback = [&]() {
-            ImGui::Text("tree_int");
-        };
-        tree_int.on_select_callback = [&](bool *is_selected) {
-            *is_selected = true;
-        };
-
-        tree_item tree_float;
-        tree_float.name = float_items[0].name;
-        tree_float.is_selected = &float_items[0].is_selected;
-        tree_float.on_expand_callback = [&]() {
-            ImGui::Text("tree_float");
-        };
-        tree_float.on_select_callback = [&](bool *is_selected) {
-            *is_selected = true;
-        };
-
-        tree_item tree_float2;
-        tree_float2.name = float_items2[0].name;
-        tree_float2.is_selected = &float_items2[0].is_selected;
-        tree_float2.on_expand_callback = [&]() {
-            ImGui::Text("tree_float2");
-        };
-        tree_float2.on_select_callback = [&](bool *is_selected) {
-            *is_selected = true;
-        };
-
-        tree_item tree_float3;
-        tree_float3.name = float_items3[0].name;
-        tree_float3.is_selected = &float_items3[0].is_selected;
-        tree_float3.on_expand_callback = [&]() {
-            ImGui::Text("tree_float3");
-        };
-        tree_float3.on_select_callback = [&](bool *is_selected) {
-            *is_selected = true;
-        };
-
-        tree_item tree_float4;
-        tree_float4.name = float_items4[0].name;
-        tree_float4.is_selected = &float_items4[0].is_selected;
-        tree_float4.on_expand_callback = [&]() {
-            ImGui::Text("tree_float4");
-        };
-        tree_float4.on_select_callback = [&](bool *is_selected) {
-            *is_selected = true;
-        };
-
-        tree_item tree_float5;
-        tree_float5.name = float_items5[0].name;
-        tree_float5.is_selected = &float_items5[0].is_selected;
-        tree_float5.on_expand_callback = [&]() {
-            ImGui::Text("tree_float5");
-        };
-        tree_float5.on_select_callback = [&](bool *is_selected) {
-            *is_selected = true;
-        };
-
-        tree_item tree_float6;
-        tree_float6.name = float_items6[0].name;
-        tree_float6.is_selected = &float_items6[0].is_selected;
-        tree_float6.on_expand_callback = [&]() {
-            ImGui::Text("tree_float6");
-        };
-        tree_float6.on_select_callback = [&](bool *is_selected) {
-            *is_selected = true;
-        };
-
-        std::vector<tree_item> tree_float_childrens;
-        tree_float_childrens.push_back(tree_float3);
-        tree_float_childrens.push_back(tree_float4);
-        tree_float.children = tree_float_childrens;
-
-        std::vector<tree_item> tree_float2_childrens;
-        tree_float2_childrens.push_back(tree_float5);
-        tree_float2_childrens.push_back(tree_float6);
-        tree_float2.children = tree_float2_childrens;
-
-        std::vector<tree_item> tree_int_childrens;
-        tree_int_childrens.push_back(tree_float);
-        tree_int_childrens.push_back(tree_float2);
-        tree_int.children = tree_int_childrens;
-        expand_nested(tree_int);
-
         float indentation = 10.f;
         for (size_t i = 0; i < render_items.size(); i++)
         {
             render_item *ri = &render_items[i];
-            std::vector<tree_item> tree_ri_childrens;
+            std::vector<tree_item> submesh_children;
+            tree_item tree_ri;
 
+            // Submeshes
             size_t num_submeshes = ri->meshes.submeshes.size();
-            // NOTE: If the data was organised as SoA we wouldn't have to re-organize the data here:
             for (size_t k = 0; k < num_submeshes; k++)
             {
                 submesh *sm = &ri->meshes.submeshes[k];
 
-                // Submeshes
                 tree_item tree_sm;
                 tree_sm.name = sm->name;
                 tree_sm.is_selected = &sm->is_selected;
+                tree_sm.parent = &tree_ri;
 
-                tree_sm.on_expand_callback = [indentation, k, sm]() {
+                tree_sm.on_expand_callback = [indentation, k, sm](tree_item *ti) {
                     ImGui::Indent(indentation);
-                    ImGui::Text("submesh #%zu", k);
                     ImGui::Text("Vertex count: %d", sm->vertex_count);
                     ImGui::Text("Index count: %d", sm->index_count);
                     ImGui::Unindent(indentation);
                 };
 
-                tree_sm.on_select_callback = [&](bool *is_selected) {
-                    *is_selected = true;
+                tree_sm.on_select_callback = [](tree_item *ti) {
+                    if (!ImGui::GetIO().KeyCtrl)
+                    {
+                        for (size_t i = 0; i < render_items.size(); i++)
+                        {
+                            render_items[i].is_selected = false;
+                            for (size_t j = 0; j < render_items[i].meshes.submeshes.size(); j++)
+                            {
+                                render_items[i].meshes.submeshes[j].is_selected = false;
+                            }
+                        }
+                        selected_items.clear();
+                    }
+
+                    *ti->parent->is_selected = true;
+                    selected_items.push_back(*ti->parent);
+
+                    *ti->is_selected = true;
+                    selected_items.push_back(*ti);
                 };
 
-                tree_ri_childrens.push_back(tree_sm);
+                submesh_children.push_back(tree_sm);
+            }
+
+            // Instances
+            std::vector<tree_item> instance_children;
+            size_t num_instances = ri->instances.size();
+            for (instance &inst : ri->instances)
+            {
+                tree_item tree_inst;
+                tree_inst.parent = &tree_ri;
+                tree_inst.name = inst.name;
+                tree_inst.is_selected = &inst.is_selected;
+                tree_inst.on_expand_callback = [inst](tree_item *ti) {
+                    float inst_pos[4];
+                    inst_pos[0] = inst.shader_data.world._41;
+                    inst_pos[1] = inst.shader_data.world._42;
+                    inst_pos[2] = inst.shader_data.world._43;
+                    inst_pos[3] = inst.shader_data.world._44;
+                    ImGui::InputFloat4("Position", inst_pos, 3);
+                };
+                tree_inst.on_select_callback = [ri](tree_item *ti) {
+                    if (!ImGui::GetIO().KeyCtrl)
+                    {
+                        for (instance &inst : ri->instances)
+                        {
+                            inst.is_selected = false;
+                        }
+                        selected_items.clear();
+                    }
+                    *ti->is_selected = true;
+                    selected_items.push_back(*ti);
+                };
+                instance_children.push_back(tree_inst);
             }
 
             // Render items
-            tree_item tree_ri;
             tree_ri.name = ri->name;
             tree_ri.is_selected = &ri->is_selected;
 
-            tree_ri.on_expand_callback = [num_submeshes, indentation, ri, i]() {
+            tree_ri.on_expand_callback = [num_instances, num_submeshes, indentation, ri, i](tree_item *ti) {
+                int push_id = 0;
+
                 ImGui::Text("render item #%zu", i);
-                ImGui::Text("Instance count: %d", ri->instance_count);
+                ImGui::Text("Instance count: %d", ri->instances.size());
                 ImGui::Text("Vertex total: %d", ri->vertex_count);
                 ImGui::Text("Index total: %d", ri->index_count);
                 ImGui::NewLine();
 
-                for (UINT j = 0; j < ri->instance_count; j++)
+                if (num_instances > 0)
                 {
-                    ImGui::PushID(j);
-                    float inst_pos[4];
-                    inst_pos[0] = ri->instance_data[j].world._41;
-                    inst_pos[1] = ri->instance_data[j].world._42;
-                    inst_pos[2] = ri->instance_data[j].world._43;
-                    inst_pos[3] = ri->instance_data[j].world._44;
-                    ImGui::Text("Instance %d postition:", j);
+                    ImGui::Text("Instances (%zu)", num_instances);
 
-                    // The empty space is to work around a bug in DearImGui.
-                    // if you pass an empty string to InputFloat4 it will break.
-                    ImGui::InputFloat4(" ", inst_pos, 3);
-                    ImGui::PopID();
+                    std::map<std::string, std::vector<tree_item>> childrens = ti->children;
+                    std::vector<tree_item> instances = childrens["instances"];
+                    for (auto &tree_inst : instances)
+                    {
+                        ImGui::PushID(push_id++);
+                        expand_nested(tree_inst);
+                        ImGui::PopID();
+                    }
                 }
+
                 ImGui::NewLine();
 
                 if (num_submeshes > 0)
+                {
                     ImGui::Text("Submeshes (%zu)", num_submeshes);
+                    std::map<std::string, std::vector<tree_item>> childrens = ti->children;
+                    std::vector<tree_item> submeshes = childrens["submeshes"];
+                    for (auto &tree_sm : submeshes)
+                    {
+                        ImGui::PushID(push_id++);
+                        expand_nested(tree_sm);
+                        ImGui::PopID();
+                    }
+                }
             };
 
-            tree_ri.on_select_callback = [&](bool *is_selected) {
-                *is_selected = true;
+            tree_ri.on_select_callback = [](tree_item *ti) {
+                // Clear render item and their submeshes selection when CTRL is not held
+                if (!ImGui::GetIO().KeyCtrl)
+                {
+                    for (size_t i = 0; i < render_items.size(); i++)
+                    {
+                        render_items[i].is_selected = false;
+                        for (size_t j = 0; j < render_items[i].meshes.submeshes.size(); j++)
+                        {
+                            render_items[i].meshes.submeshes[j].is_selected = false;
+                        }
+                    }
+                    selected_items.clear();
+                }
+
+                // Select all child items when selecting a render item
+                for (tree_item &child : ti->children["submeshes"])
+                {
+                    *child.is_selected = true;
+                    selected_items.push_back(child);
+                }
+                *ti->is_selected = true;
+                selected_items.push_back(*ti);
             };
 
-            tree_ri.children = tree_ri_childrens;
+            tree_ri.children["submeshes"] = submesh_children;
+            tree_ri.children["instances"] = instance_children;
 
             ImGui::PushID((int)i);
-            // render the ImGui content for this render item as described in the callback
-            // and recursively render nested child elements.
             expand_nested(tree_ri);
             ImGui::PopID();
         }
     }
-
-    if (ImGui::CollapsingHeader("Manual coding"))
-    {
-        // first set
-        ImGui::PushID(0);
-        bool is_expanded = ImGui::TreeNodeExV("render_items", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
-        ImGui::PopID();
-        ImGui::SameLine();
-        ImGui::Selectable("outer selectable", false);
-        if (is_expanded)
-        {
-            ImGui::PushID(0);
-            bool is_expanded = ImGui::TreeNodeExV("render_items", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
-            ImGui::PopID();
-            ImGui::SameLine();
-            ImGui::Selectable("inner1 selectable", false);
-            if (is_expanded)
-            {
-                ImGui::PushID(0);
-                bool is_expanded = ImGui::TreeNodeExV("render_items", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
-                ImGui::PopID();
-                ImGui::SameLine();
-                ImGui::Selectable("inner2 selectable", false);
-                if (is_expanded)
-                {
-                    ImGui::PushID(0);
-                    bool is_expanded = ImGui::TreeNodeExV("render_items", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
-                    ImGui::PopID();
-                    ImGui::SameLine();
-                    ImGui::Selectable("inner3 selectable", false);
-                    if (is_expanded)
-                    {
-                        ImGui::TreePop();
-                    }
-                    ImGui::TreePop();
-                }
-                ImGui::TreePop();
-            }
-
-            ImGui::PushID(1);
-            bool is_expanded2 = ImGui::TreeNodeExV("render_items", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
-            ImGui::PopID();
-            ImGui::SameLine();
-            ImGui::Selectable("inner1 selectable", false);
-            if (is_expanded2)
-            {
-                ImGui::PushID(1);
-                bool is_expanded2 = ImGui::TreeNodeExV("render_items", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
-                ImGui::PopID();
-                ImGui::SameLine();
-                ImGui::Selectable("inner2 selectable", false);
-                if (is_expanded2)
-                {
-                    ImGui::TreePop();
-                }
-                ImGui::TreePop();
-            }
-            ImGui::TreePop();
-        }
-
-        // second set
-        bool is_expanded2 = ImGui::TreeNodeExV("render_items", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
-        ImGui::SameLine();
-        ImGui::Selectable("outer selectable", false);
-        if (is_expanded2)
-        {
-
-            bool is_expanded = ImGui::TreeNodeExV("render_items", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
-            ImGui::SameLine();
-            ImGui::Selectable("inner1 selectable", false);
-            if (is_expanded)
-            {
-                bool is_expanded = ImGui::TreeNodeExV("render_items", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
-                ImGui::SameLine();
-                ImGui::Selectable("inner2 selectable", false);
-                if (is_expanded)
-                {
-                    bool is_expanded = ImGui::TreeNodeExV("render_items", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
-                    ImGui::SameLine();
-                    ImGui::Selectable("inner3 selectable", false);
-                    if (is_expanded)
-                    {
-                        ImGui::TreePop();
-                    }
-                    ImGui::TreePop();
-                }
-                ImGui::TreePop();
-            }
-            ImGui::TreePop();
-        }
-    }
 }
-
-//template <typename T>
-//struct tree_item
-//{
-//    std::vector<T> *items;
-//    std::function<void(T)> inner_node_callback;
-//    std::function<void(std::vector<T> *, int)> outer_node_callback;
-//};
-//
-//template <typename... Ts>
-//struct tuple_node
-//{
-//    std::tuple<Ts...> tupl;
-//};
-//
-//// recursion base case
-//template <typename T>
-//void expand_nested(tree_item<T> ti)
-//{
-//    bool node_expanded = false;
-//
-//    for (int i = 0; i < ti.items->size(); ++i)
-//    {
-//        ImGui::PushID(i);
-//        node_expanded = ImGui::TreeNodeExV("", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
-//        ImGui::SameLine();
-//        ImGui::PopID();
-//
-//        ti.outer_node_callback(ti.items, i);
-//
-//        if (node_expanded)
-//        {
-//            ti.inner_node_callback(ti.items->at(i));
-//            ImGui::TreePop();
-//        }
-//    }
-//}
-//
-//int curr_iter = 0;
-//// recursive function
-//template <typename T, typename... Rest>
-//void expand_nested(tree_item<T> ti, tree_item<Rest>... rest)
-//{
-//    bool node_expanded = false;
-//    int i = curr_iter;
-//    ImGui::PushID((int)i);
-//    node_expanded = ImGui::TreeNodeExV("", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
-//    ImGui::SameLine();
-//    ImGui::PopID();
-//    ti.outer_node_callback(ti.items, i);
-//
-//    if (node_expanded)
-//    {
-//        ti.inner_node_callback(ti.items->at(i));
-//        expand_nested(rest...);
-//        ImGui::TreePop();
-//    }
-//}
-//
-//template <typename... Ts>
-//void expand_root(std::vector<tuple_node<Ts...>> nodes)
-//{
-//    for (size_t i = 0; i < nodes.size(); i++)
-//    {
-//        curr_iter = i;
-//        // still need to figure out how to pass i to the first recursive call
-//        std::apply([&](auto &... tuple_items) { expand_nested(tuple_items...); }, nodes[i].tupl);
-//    }
-//    curr_iter = 0;
-//}
 
 void imgui_update()
 {
+    if (GetAsyncKeyState(VK_ESCAPE))
+        for (tree_item &item : selected_items)
+        {
+            *item.is_selected = false;
+            selected_items.clear();
+        }
+
     imgui_new_frame();
 
     ImGui::Begin("3D Transforms", &show_main);
@@ -1009,223 +847,51 @@ void imgui_update()
     }
 
     imgui_nested_tree();
+    ImGui::End();
 
-    //if (ImGui::CollapsingHeader("Test nested tree"))
-    //{
-    //    float indentation = 10.f;
-    //    std::vector<tuple_node<tree_item<render_item>, tree_item<submesh>>> nodes;
+    ImGui::Begin("Selection", &show_selection);
+    if (current_instance)
+    {
+        ImGui::SliderFloat3("Translation", current_instance->translation, -20.f, 20.f);
+        ImGui::SameLine();
+        if (ImGui::Button("Reset translation"))
+        {
+            current_instance->translation[0] = 0.f;
+            current_instance->translation[1] = 0.f;
+            current_instance->translation[2] = 0.f;
+        }
+        ImGui::SliderFloat("Right angle", &current_instance->right_angle, 0, 360);
+        ImGui::SameLine();
+        if (ImGui::Button("Reset right angle"))
+        {
+            current_instance->right_angle = 0.f;
+        }
+        ImGui::SliderFloat("Up angle", &current_instance->up_angle, 0, 360);
+        ImGui::SameLine();
+        if (ImGui::Button("Reset up angle"))
+        {
+            current_instance->up_angle = 0.f;
+        }
+        ImGui::SliderFloat("Forward angle", &current_instance->forward_angle, 0, 360);
+        ImGui::SameLine();
+        if (ImGui::Button("Reset forward angle"))
+        {
+            current_instance->forward_angle = 0.f;
+        }
 
-    //    for (size_t i = 0; i < render_items.size(); i++)
-    //    {
-    //        // render item
-    //        tree_item<render_item> tree_ri;
-    //        tree_ri.inner_node_callback = [&](render_item ri) {
-    //            ImGui::Indent(indentation);
-    //            ImGui::Text("ID: %d", ri.id);
-    //            ImGui::Text("Instance count: %d", ri.instance_count);
-    //            ImGui::Text("Vertices total: %d", ri.vertex_count);
-    //            ImGui::Text("Indices total: %d", ri.index_count);
-    //            ImGui::NewLine();
+        ImGui::SliderFloat3("Scale", current_instance->scale, 01.f, 20.f);
+        ImGui::SameLine();
+        if (ImGui::Button("Reset scale"))
+        {
+            current_instance->scale[0] = 1.f;
+            current_instance->scale[1] = 1.f;
+            current_instance->scale[2] = 1.f;
+        }
+    }
 
-    //            for (UINT j = 0; j < ri.instance_count; j++)
-    //            {
-    //                float inst_pos[4];
-    //                inst_pos[0] = ri.instance_data[j].world._41;
-    //                inst_pos[1] = ri.instance_data[j].world._42;
-    //                inst_pos[2] = ri.instance_data[j].world._43;
-    //                inst_pos[3] = ri.instance_data[j].world._44;
-    //                ImGui::Text("Instance %d postition:", j);
-
-    //                // The empty space is to work around a bug in DearImGui.
-    //                // if you pass an empty string to InputFloat4 it will break.
-    //                ImGui::InputFloat4(" ", inst_pos, 3);
-    //            }
-
-    //            ImGui::NewLine();
-    //        };
-
-    //        tree_ri.outer_node_callback = [&](std::vector<render_item> *ri, int i) {
-    //            if (ImGui::Selectable(ri->at(i).name.c_str(), ri->at(i).is_selected))
-    //            {
-    //                if (!ImGui::GetIO().KeyCtrl) // Clear selection when CTRL is not held
-    //                {
-    //                    for (size_t k = 0; k < ri->size(); k++)
-    //                    {
-    //                        ri->at(k).is_selected = false;
-    //                        for (size_t l = 0; l < ri->at(k).meshes.submeshes.size(); l++)
-    //                        {
-    //                            ri->at(k).meshes.submeshes[l].is_selected = false;
-    //                        }
-    //                    }
-    //                }
-
-    //                for (size_t k = 0; k < ri->at(i).meshes.submeshes.size(); k++)
-    //                {
-    //                    ri->at(i).meshes.submeshes[k].is_selected = true;
-    //                }
-    //                ri->at(i).is_selected = true;
-    //            }
-    //        };
-    //        tree_ri.items = &render_items;
-
-    //        // submesh
-    //        tree_item<submesh> tree_submesh;
-    //        tree_submesh.inner_node_callback = [&](submesh sm) {
-    //            ImGui::Indent(indentation);
-    //            ImGui::Text("Vertices: %d", sm.vertex_count);
-    //            ImGui::Text("Indices: %d", sm.index_count);
-    //            ImGui::Unindent(indentation);
-    //        };
-
-    //        tree_submesh.outer_node_callback = [&](std::vector<submesh> *sm, int i) {
-    //            if (ImGui::Selectable(sm->at(i).name.c_str(), sm->at(i).is_selected))
-    //            {
-    //                if (!ImGui::GetIO().KeyCtrl) // Clear selection when CTRL is not held
-    //                {
-    //                    for (size_t k = 0; k < sm->size(); k++)
-    //                    {
-    //                        sm->at(k).is_selected = false;
-    //                    }
-    //                }
-    //                sm->at(i).is_selected = true;
-    //            }
-    //        };
-    //        tree_submesh.items = &render_items[i].meshes.submeshes;
-
-    //        tuple_node<tree_item<render_item>, tree_item<submesh>> node;
-    //        node.tupl = std::make_tuple(tree_ri, tree_submesh);
-
-    //        nodes.push_back(node);
-    //    }
-
-    //    expand_root(nodes);
-    //}
-
-    //if (ImGui::CollapsingHeader("Render items"))
-    //{
-    //    bool renderitems_node_expanded = false;
-    //    bool submeshes_node_expanded = false;
-    //    bool instances_node_expanded = false;
-    //    float indentation = 10.f;
-
-    //    for (int i = 0; i < render_items.size(); i++)
-    //    {
-    //        ImGui::PushID(i);
-    //        renderitems_node_expanded = ImGui::TreeNodeExV("", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
-    //        ImGui::SameLine();
-    //        ImGui::PopID();
-
-    //        if (ImGui::Selectable(render_items[i].name.c_str(), render_items[i].is_selected))
-    //        {
-    //            if (!ImGui::GetIO().KeyCtrl) // Clear selection when CTRL is not held
-    //            {
-    //                for (size_t k = 0; k < render_items.size(); k++)
-    //                {
-    //                    render_items[k].is_selected = false;
-    //                    for (size_t l = 0; l < render_items[k].meshes.submeshes.size(); l++)
-    //                    {
-    //                        render_items[k].meshes.submeshes[l].is_selected = false;
-    //                    }
-    //                }
-    //            }
-
-    //            for (size_t k = 0; k < render_items[i].meshes.submeshes.size(); k++)
-    //            {
-    //                render_items[i].meshes.submeshes[k].is_selected = true;
-    //            }
-    //            render_items[i].is_selected = true;
-    //        }
-
-    //        if (renderitems_node_expanded)
-    //        {
-    //            ImGui::Indent(indentation);
-    //            ImGui::Text("ID: %d", render_items[i].id);
-    //            ImGui::Text("Instance count: %d", render_items[i].instance_count);
-    //            ImGui::Text("Vertices total: %d", render_items[i].vertex_count);
-    //            ImGui::Text("Indices total: %d", render_items[i].index_count);
-    //            ImGui::NewLine();
-
-    //            if (render_items[i].meshes.submeshes.size() > 0)
-    //            {
-    //                ImGui::Text("Submeshes:");
-    //                for (int j = 0; j < render_items[i].meshes.submeshes.size(); j++)
-    //                {
-    //                    ImGui::PushID(j);
-    //                    submeshes_node_expanded = ImGui::TreeNodeExV("", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
-    //                    ImGui::SameLine();
-
-    //                    if (ImGui::Selectable(render_items[i].meshes.submeshes[j].name.c_str(), render_items[i].meshes.submeshes[j].is_selected))
-    //                    {
-    //                        if (!ImGui::GetIO().KeyCtrl) // Clear selection when CTRL is not held
-    //                        {
-    //                            for (size_t k = 0; k < render_items.size(); k++)
-    //                            {
-    //                                render_items[k].is_selected = false;
-    //                                for (size_t l = 0; l < render_items[k].meshes.submeshes.size(); l++)
-    //                                {
-    //                                    render_items[k].meshes.submeshes[l].is_selected = false;
-    //                                }
-    //                            }
-    //                        }
-    //                        render_items[i].meshes.submeshes[j].is_selected = true;
-    //                    }
-
-    //                    ImGui::PopID();
-    //                    if (submeshes_node_expanded)
-    //                    {
-    //                        ImGui::Indent(indentation);
-    //                        ImGui::Text("Vertices: %d", render_items[i].meshes.submeshes[j].vertex_count);
-    //                        ImGui::Text("Indices: %d", render_items[i].meshes.submeshes[j].index_count);
-    //                        ImGui::Unindent(indentation);
-    //                        ImGui::TreePop();
-    //                    }
-    //                }
-    //            }
-
-    //            if (render_items[i].instance_count > 0)
-    //            {
-    //                ImGui::Text("Instances:");
-    //                for (UINT j = 0; j < render_items[i].instance_count; j++)
-    //                {
-    //                    bool is_instance_selected = false;
-    //                    ImGui::PushID(j*50);
-    //                    instances_node_expanded = ImGui::TreeNodeExV("", ImGuiTreeNodeFlags_FramePadding, "", nullptr);
-    //                    ImGui::SameLine();
-    //                    ImGui::PopID();
-
-    //                    char buf[50];
-    //                    sprintf(buf, "Instance %d", j);
-    //                    if (render_items[i].selected_instance == j)
-    //                        is_instance_selected = true;
-
-    //                    if (ImGui::Selectable(buf, is_instance_selected))
-    //                    {
-    //                    }
-
-    //                    if (instances_node_expanded)
-    //                    {
-    //                        ImGui::Indent(indentation);
-    //                        ImGui::Text("Postition:", j);
-    //                        float inst_pos[4];
-    //                        inst_pos[0] = render_items[i].instance_data[j].world._41;
-    //                        inst_pos[1] = render_items[i].instance_data[j].world._42;
-    //                        inst_pos[2] = render_items[i].instance_data[j].world._43;
-    //                        inst_pos[3] = render_items[i].instance_data[j].world._44;
-    //                        // The empty space is to work around a bug in DearImGui.
-    //                        // if you pass an empty string to InputFloat4 it will break.
-    //                        ImGui::InputFloat4(" ", inst_pos, 3);
-    //                        ImGui::Unindent(indentation);
-    //                        ImGui::TreePop();
-    //                    }
-    //                }
-    //            }
-    //            ImGui::Unindent(indentation);
-    //            ImGui::Unindent(indentation);
-    //            ImGui::TreePop();
-    //        }
-    //    }
-    //}
-
+    ImGui::Separator();
+    ImGui::SliderFloat("dx angle", &dx_angle, 0, 360);
+    ImGui::SliderFloat("dy angle", &dy_angle, 0, 360);
     ImGui::End();
 
     ImGui::Begin("Performance", &show_perf);
@@ -1259,10 +925,11 @@ extern "C" __declspec(dllexport) bool update_and_render()
     // view matrix
     update_camera();
 
+    std::vector<instance> total_ri_instances;
+
     // update object constant data
-    for (int i = 0; i < render_items.size(); i++)
+    for (render_item &ri : render_items)
     {
-        render_item ri = render_items[i];
         XMMATRIX world = XMLoadFloat4x4(&ri.world);
         XMFLOAT4X4 transposed;
         XMStoreFloat4x4(&transposed, XMMatrixTranspose(world));
@@ -1270,13 +937,39 @@ extern "C" __declspec(dllexport) bool update_and_render()
         frame->cb_objconstant_upload->copy_data(ri.cb_index, (void *)&transposed);
 
         // update instance data
-        for (int j = 0; j < ri.instance_data.size(); j++)
+        for (int j = 0; j < ri.instances.size(); j++)
         {
-            instance_data instance = ri.instance_data[j];
-            world = XMLoadFloat4x4(&instance.world);
-            XMStoreFloat4x4(&transposed, XMMatrixTranspose(world));
+            instance inst = ri.instances[j];
+            XMMATRIX inst_world = XMLoadFloat4x4(&inst.shader_data.world);
+            instance_data inst_shader_data;
+            XMStoreFloat4x4(&inst_shader_data.world, XMMatrixTranspose(inst_world));
 
-            frame->sb_instancedata_upload->copy_data(j, (void *)&transposed);
+            if (inst.is_selected)
+            {
+                current_instance = &ri.instances[j];
+                XMVECTOR right = XMVectorSet(1.f, 0.f, 0.f, 0.f);
+                XMVECTOR right_rot_quat = XMQuaternionRotationAxis(right, XMConvertToRadians(current_instance->right_angle));
+
+                XMVECTOR up = XMVectorSet(0.f, 1.f, 0.f, 0.f);
+                XMVECTOR up_rot_quat = XMQuaternionRotationAxis(up, XMConvertToRadians(current_instance->up_angle));
+
+                XMVECTOR forward = XMVectorSet(0.f, 0.f, 1.f, 0.f);
+                XMVECTOR forward_rot_quat = XMQuaternionRotationAxis(forward, XMConvertToRadians(current_instance->forward_angle));
+
+                XMVECTOR rot_quat = XMQuaternionMultiply(forward_rot_quat, XMQuaternionMultiply(right_rot_quat, up_rot_quat));
+                XMMATRIX rot_mat = XMMatrixRotationQuaternion(rot_quat);
+
+                XMMATRIX scale_mat = XMMatrixScaling(current_instance->scale[0], current_instance->scale[1], current_instance->scale[2]);
+                XMMATRIX translation_mat = XMMatrixTranslation(current_instance->translation[0], current_instance->translation[1], current_instance->translation[2]);
+                XMMATRIX srt = scale_mat * rot_mat * translation_mat;
+
+                XMMATRIX new_world = XMMatrixIdentity();
+                new_world = new_world * srt;
+
+                XMStoreFloat4x4(&current_instance->shader_data.world, new_world);
+                XMStoreFloat4x4(&inst_shader_data.world, XMMatrixTranspose(inst_world));
+            }
+            frame->sb_instancedata_upload->copy_data(j, (void *)&inst_shader_data);
         }
     }
 
@@ -1311,6 +1004,7 @@ extern "C" __declspec(dllexport) bool update_and_render()
     cmdlist->SetGraphicsRootSignature(dr->rootsig);
     cmdlist->SetGraphicsRootConstantBufferView(0, frame->cb_passdata_upload->m_uploadbuffer->GetGPUVirtualAddress());
     draw_render_items(cmdlist, &render_items);
+    draw_debug_lines(cmdlist, &debug_lines);
 
     query->start_query("ui_rendering");
     imgui_render(cmdlist);
@@ -1333,6 +1027,48 @@ extern "C" __declspec(dllexport) bool update_and_render()
     return true;
 }
 
+void update_orbit(float x, float y)
+{
+    XMVECTOR start_cam_pos = cam.position;
+
+    XMStoreFloat3(&orbit_line.start.position, start_cam_pos);
+    XMStoreFloat3(&orbit_line.end.position, orbit_target_pos);
+    XMStoreFloat4(&orbit_line.start.color, DirectX::Colors::Red.v);
+    XMStoreFloat4(&orbit_line.end.color, DirectX::Colors::GreenYellow.v);
+
+    // Get the direction vector from the camera position to the target position (position - point = direction)
+    XMVECTOR cam_to_target_dir = orbit_target_pos - cam.position;
+
+    // Translate to target position (direction + point = point)
+    cam.position = cam_to_target_dir + cam.position;
+
+    // Rotate the camera forward direction around the camera up vector.
+    camera_up = XMVectorSet(0.f, 1.f, 0.f, 0.f);
+    XMVECTOR up_rot_quat = XMQuaternionRotationAxis(camera_up, x);
+    XMMATRIX up_rot_mat = XMMatrixRotationQuaternion(up_rot_quat);
+    XMVECTOR rot_cam_dir = XMVector3Normalize(XMVector3Transform(camera_forward, up_rot_mat));
+
+    // Rotate the right vector to reorient the viewer
+    camera_right = XMVector3TransformNormal(camera_right, up_rot_mat);
+
+    // Rotate the camera forward direction around the camera right vector.
+    XMVECTOR right_rot_quat = XMQuaternionRotationAxis(camera_right, y);
+    XMMATRIX right_rot_mat = XMMatrixRotationQuaternion(right_rot_quat);
+    rot_cam_dir = XMVector3TransformNormal(rot_cam_dir, right_rot_mat);
+    camera_up = XMVector3TransformNormal(camera_up, right_rot_mat);
+
+    // get the distance from the camera position to the object it orbits
+    XMVECTOR cam_to_target = XMVectorSubtract(orbit_target_pos, start_cam_pos);
+    float dist_to_target = XMVectorGetX(XMVector3Length(cam_to_target));
+
+    // Place the camera back
+    rot_cam_dir = XMVectorScale(rot_cam_dir, -dist_to_target);
+    cam.position = XMVectorAdd(cam.position, rot_cam_dir);
+
+    //look at the thing we're orbiting around
+    camera_forward = XMVector4Normalize(XMVectorSubtract(orbit_target_pos, cam.position));
+}
+
 extern "C" __declspec(dllexport) void wndproc(UINT msg, WPARAM wParam, LPARAM lParam)
 {
     imgui_wndproc(msg, wParam, lParam);
@@ -1347,16 +1083,13 @@ extern "C" __declspec(dllexport) void wndproc(UINT msg, WPARAM wParam, LPARAM lP
     case WM_MOUSEMOVE:
         if (!ImGui::IsAnyWindowHovered() && !ImGui::IsAnyItemHovered() && !ImGui::IsAnyItemFocused() && !ImGui::IsAnyWindowFocused())
         {
-
             if (ImGui::IsMouseDown(ImGuiMouseButton_Left))
             {
                 float x = ImGui::GetMousePos().x;
                 float y = ImGui::GetMousePos().y;
 
-                float dx = XMConvertToRadians(3.5f * (x - last_mouse_pos.x));
-                float dy = XMConvertToRadians(3.5f * (y - last_mouse_pos.y));
-
-                camera_dir = XMVector3Normalize(camera_dir);
+                float dx = XMConvertToRadians(0.5f * (x - last_mouse_pos.x));
+                float dy = XMConvertToRadians(0.5f * (y - last_mouse_pos.y));
 
                 if (GetAsyncKeyState(VK_MENU))
                 {
@@ -1367,47 +1100,47 @@ extern "C" __declspec(dllexport) void wndproc(UINT msg, WPARAM wParam, LPARAM lP
 
                     is_orbiting = true;
 
-                    XMVECTOR start_cam_pos = cam.position;
-                    // translate cam position to origin
-                    //XMMATRIX to_origin = XMMatrixTranslationFromVector(-cam.position);
-                    //cam.position = XMVector3Transform(cam.position, to_origin);
+                    //update_orbit(dx, dy);
 
-                    // translate cam position to the target position
-                    // get direction vector from the camera position to the target position (position - point = direction)
+                    XMVECTOR start_cam_pos = cam.position;
+
+                    XMStoreFloat3(&orbit_line.start.position, start_cam_pos);
+                    XMStoreFloat3(&orbit_line.end.position, orbit_target_pos);
+                    XMStoreFloat4(&orbit_line.start.color, DirectX::Colors::Red.v);
+                    XMStoreFloat4(&orbit_line.end.color, DirectX::Colors::GreenYellow.v);
+
+                    // Get the direction vector from the camera position to the target position (position - point = direction)
                     XMVECTOR cam_to_target_dir = orbit_target_pos - cam.position;
-                    // translate to target position (direction + point = point)
+
+                    // Translate to target position (direction + point = point)
                     cam.position = cam_to_target_dir + cam.position;
 
-                    // rotate the camera direction
-                    XMMATRIX to_yaw = XMMatrixRotationY(XMConvertToRadians(dx));
-                    XMVECTOR rot_cam_dir = XMVector3Normalize(XMVector3Transform(camera_dir, to_yaw));
-                    // rotate the right vector to reorient the viewer
-                    camera_right = XMVector3TransformNormal(camera_right, to_yaw);
+                    XMMATRIX to_yaw = XMMatrixRotationY(dx);
+                    XMMATRIX to_pitch = XMMatrixRotationAxis(camera_right, dy);
+                    XMMATRIX to_final = to_yaw * to_pitch;
 
-                    XMMATRIX to_pitch = XMMatrixRotationAxis(camera_right, XMConvertToRadians(dy));
-                    rot_cam_dir = XMVector3TransformNormal(rot_cam_dir, to_pitch);
-                    camera_up = XMVector3TransformNormal(camera_up, to_pitch);
+                    XMVECTOR rot_cam_forward = XMVector3Normalize(XMVector3Transform(camera_forward, to_final));
 
                     // get the distance from the camera position to the object it orbits
                     XMVECTOR cam_to_target = XMVectorSubtract(orbit_target_pos, start_cam_pos);
                     float dist_to_target = XMVectorGetX(XMVector3Length(cam_to_target));
 
                     // Place the camera back
-                    rot_cam_dir = XMVectorScale(rot_cam_dir, -dist_to_target);
-                    cam.position = XMVectorAdd(cam.position, rot_cam_dir);
+                    rot_cam_forward = XMVectorScale(rot_cam_forward, -dist_to_target);
+                    cam.position = XMVectorAdd(cam.position, rot_cam_forward);
 
                     //look at the thing we're orbiting around
-                    camera_dir = XMVector4Normalize(XMVectorSubtract(orbit_target_pos, cam.position));
+                    camera_forward = XMVector4Normalize(XMVectorSubtract(orbit_target_pos, cam.position));
                 }
                 else
                 {
-                    XMMATRIX yaw = XMMatrixRotationY(XMConvertToRadians(dx));
-                    camera_dir = XMVector3TransformNormal(camera_dir, yaw);
+                    XMMATRIX yaw = XMMatrixRotationY(dx);
+                    camera_forward = XMVector3TransformNormal(camera_forward, yaw);
                     camera_right = XMVector3TransformNormal(camera_right, yaw);
                     camera_up = XMVector3TransformNormal(camera_up, yaw);
 
-                    XMMATRIX pitch = XMMatrixRotationAxis(camera_right, XMConvertToRadians(dy));
-                    camera_dir = XMVector3TransformNormal(camera_dir, pitch);
+                    XMMATRIX pitch = XMMatrixRotationAxis(camera_right, dy);
+                    camera_forward = XMVector3TransformNormal(camera_forward, pitch);
                     camera_up = XMVector3TransformNormal(camera_up, pitch);
                 }
             }
@@ -1451,6 +1184,7 @@ extern "C" __declspec(dllexport) void cleanup()
     dr->flush_cmd_queue();
 
     safe_release(flat_color_pso);
+    safe_release(line_pso);
     safe_release(wireframe_pso);
     safe_release(cmdlist);
     safe_release(ui_requests_cmdlist);
@@ -1471,6 +1205,7 @@ extern "C" __declspec(dllexport) void cleanup()
 
     delete dr;
     delete query;
+    delete debug_lines_upload;
 
 #ifdef DX12_ENABLE_DEBUG_LAYER
     IDXGIDebug1 *debug = NULL;

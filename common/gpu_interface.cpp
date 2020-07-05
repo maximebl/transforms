@@ -284,6 +284,9 @@ void device_resources::cleanup_rendertargets()
 
 device_resources::~device_resources()
 {
+#ifdef DEBUG
+    safe_release(debug);
+#endif // DEBUG
     safe_release(rootsig);
     safe_release(dsv_heap);
     safe_release(dsv_resource);
@@ -301,7 +304,6 @@ device_resources::~device_resources()
     safe_release(adapter);
     safe_release(dxgi_factory);
     safe_release(swapchain);
-    safe_release(debug);
     safe_release(cmd_queue);
     safe_release(fence);
     safe_release(device);
@@ -587,7 +589,7 @@ void create_mesh_data(ID3D12Device *device, ID3D12GraphicsCommandList *cmd_list,
                       size_t index_stride, size_t index_count, void *index_data,
                       mesh *mesh)
 {
-    mesh->resource = new mesh_resource; 
+    mesh->resource = new mesh_resource;
     mesh->name = name;
 
     // vertex data
@@ -638,10 +640,10 @@ size_t align_up(size_t value, size_t alignment)
     return ((value + (alignment - 1)) & ~(alignment - 1));
 }
 
-upload_buffer::upload_buffer(ID3D12Device *device, UINT element_count, UINT element_byte_size, const char *name)
+upload_buffer::upload_buffer(ID3D12Device *device, size_t element_count, size_t element_byte_size, const char *name)
     : m_element_byte_size(element_byte_size)
 {
-    m_buffer_size = m_element_byte_size * element_count;
+    m_buffer_size = (UINT)m_element_byte_size * (UINT)element_count;
 
     device->CreateCommittedResource(
         &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
