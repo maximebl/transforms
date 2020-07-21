@@ -244,7 +244,7 @@ void device_resources::create_dsv(UINT64 width, UINT height)
         dsv_heap->GetCPUDescriptorHandleForHeapStart());
 }
 
-D3D12_GRAPHICS_PIPELINE_STATE_DESC device_resources::create_default_pso(std::vector<D3D12_INPUT_ELEMENT_DESC> *input_layouts, ID3DBlob *vs, ID3DBlob *ps)
+D3D12_GRAPHICS_PIPELINE_STATE_DESC device_resources::create_default_pso_desc(std::vector<D3D12_INPUT_ELEMENT_DESC> *input_layouts, ID3DBlob *vs, ID3DBlob *ps)
 {
     D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {};
     desc.NodeMask = DEFAULT_NODE;
@@ -445,6 +445,42 @@ void set_viewport_rects(ID3D12GraphicsCommandList *cmd_list)
     vp.MaxDepth = 1.0f;
     vp.MinDepth = 0.0f;
     cmd_list->RSSetViewports(1, &vp);
+}
+
+COMMON_API D3D12_DEPTH_STENCIL_DESC create_outline_dss()
+{
+    D3D12_DEPTH_STENCIL_DESC outline_dss = {};
+    outline_dss.DepthWriteMask = D3D12_DEPTH_WRITE_MASK::D3D12_DEPTH_WRITE_MASK_ALL;
+    outline_dss.DepthEnable = true;
+    outline_dss.StencilEnable = true;
+    outline_dss.StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK;
+    outline_dss.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;
+    outline_dss.DepthFunc = D3D12_COMPARISON_FUNC::D3D12_COMPARISON_FUNC_LESS;
+
+    outline_dss.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC::D3D12_COMPARISON_FUNC_NOT_EQUAL;
+    outline_dss.FrontFace.StencilDepthFailOp = D3D12_STENCIL_OP::D3D12_STENCIL_OP_KEEP;
+    outline_dss.FrontFace.StencilPassOp = D3D12_STENCIL_OP::D3D12_STENCIL_OP_KEEP;
+    outline_dss.FrontFace.StencilFailOp = D3D12_STENCIL_OP::D3D12_STENCIL_OP_KEEP;
+    outline_dss.BackFace = outline_dss.FrontFace;
+    return outline_dss;
+}
+
+COMMON_API D3D12_DEPTH_STENCIL_DESC create_stencil_dss()
+{
+    D3D12_DEPTH_STENCIL_DESC stencil_dss = {};
+    stencil_dss.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO; // dont write to the depth buffer
+    stencil_dss.StencilEnable = true;
+    stencil_dss.DepthEnable = true;
+    stencil_dss.StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK;
+    stencil_dss.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;
+    stencil_dss.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+
+    stencil_dss.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS; // always write to the stencil buffer
+    stencil_dss.FrontFace.StencilPassOp = D3D12_STENCIL_OP_REPLACE;
+    stencil_dss.FrontFace.StencilFailOp = D3D12_STENCIL_OP_KEEP;
+    stencil_dss.FrontFace.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
+    stencil_dss.BackFace = stencil_dss.FrontFace;
+    return stencil_dss;
 }
 
 bool compile_shader(const wchar_t *file, const wchar_t *entry, shader_type type, ID3DBlob **blob)

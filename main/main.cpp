@@ -42,9 +42,9 @@ int main()
 
     WNDCLASSEX wc = {sizeof(WNDCLASSEX), CS_CLASSDC, WndProc, 0L, 0L, win32code, NULL, NULL, NULL, NULL, _T("transforms"), NULL};
     RegisterClassEx(&wc);
-    g_hwnd = CreateWindow(wc.lpszClassName, _T("transforms"), WS_OVERLAPPEDWINDOW, 100, 100, 1280, 800, NULL, NULL, wc.hInstance, NULL);
+    g_hwnd = CreateWindow(wc.lpszClassName, _T("transforms"), WS_OVERLAPPEDWINDOW, 100, 100, 2560, 1600, NULL, NULL, wc.hInstance, NULL);
 
-    ShowWindow(g_hwnd, SW_SHOWDEFAULT);
+    ShowWindow(g_hwnd, SW_SHOWMAXIMIZED);
     UpdateWindow(g_hwnd);
     GetWindowTextW(g_hwnd, window_text, 100);
 

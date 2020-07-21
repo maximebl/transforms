@@ -2,8 +2,6 @@
 #include <common.h>
 #include <gpu_interface.h>
 
-using namespace DirectX;
-
 struct object_data
 {
     DirectX::XMFLOAT4X4 world;
@@ -40,6 +38,7 @@ public:
     ~frame_resource();
     upload_buffer *cb_objconstant_upload = nullptr;
     upload_buffer *sb_instancedata_upload = nullptr;
+    upload_buffer *sb_instanceIDs_upload = nullptr;
     upload_buffer *cb_passdata_upload = nullptr;
     size_t cb_objconstants_size = 0;
 };
@@ -54,6 +53,7 @@ struct instance
     float right_angle = 0.f;
     float up_angle = 0.f;
     float forward_angle = 0.f;
+    DirectX::BoundingBox bounds;
 };
 
 struct render_item
@@ -62,8 +62,7 @@ struct render_item
 
     std::string name;
     bool is_selected = false;
-    XMFLOAT4X4 world;
-    int id = -1;
+    DirectX::XMFLOAT4X4 world;
     int cb_index = -1;
     D3D12_PRIMITIVE_TOPOLOGY topology = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 

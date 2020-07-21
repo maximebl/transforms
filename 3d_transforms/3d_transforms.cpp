@@ -11,7 +11,7 @@
 #include "math_helpers.h"
 #include "cameraz.h"
 #include <functional>
-#include <tuple>
+#include <numeric> // std::iota
 camera cam;
 
 using namespace DirectX;
@@ -48,12 +48,16 @@ internal views shading;
 internal ID3D12PipelineState *flat_color_pso = nullptr;
 internal ID3D12PipelineState *line_pso = nullptr;
 internal ID3D12PipelineState *wireframe_pso = nullptr;
+internal ID3D12PipelineState *stencil_pso = nullptr;
+internal ID3D12PipelineState *outline_pso = nullptr;
 
 // Shader data
 internal ID3DBlob *debugfx_blob_vs = nullptr;
 internal ID3DBlob *debugfx_blob_ps = nullptr;
 internal ID3DBlob *perspective_blob_vs = nullptr;
 internal ID3DBlob *perspective_blob_ps = nullptr;
+internal ID3DBlob *outline_blob_ps = nullptr;
+internal ID3DBlob *outline_blob_vs = nullptr;
 
 // Queries data
 #define NUM_QUERIES 5
@@ -61,6 +65,7 @@ internal gpu_query *query = nullptr;
 internal double imgui_gpu_time = 0;
 
 // Application state
+internal std ::vector<render_item> selected_render_items;
 internal float bg_color[4] = {0.f, 0.f, 0.f, 1.f};
 internal bool is_vsync = true;
 internal bool show_demo = true;
@@ -72,8 +77,13 @@ internal bool show_selection = true;
 // Render items data
 #define MAX_RENDER_ITEMS 10
 #define NUM_RENDER_ITEMS 1
-#define MAX_INSTANCE_COUNT_PER_OBJECT 2
+#define MAX_INSTANCE_COUNT_PER_OBJECT 1
 internal std::vector<render_item> render_items;
+
+// Instance data
+internal std::vector<instance *> total_ri_instances;
+internal instance *selected_inst;
+internal ID3D12DescriptorHeap *instanceIDs_srv_heap = nullptr;
 
 // Geometry
 internal std::unordered_map<std::wstring, mesh> geometries;
@@ -105,14 +115,7 @@ XMVECTOR camera_up = XMVectorSet(0.f, 1.f, 0.f, 0.f);
 bool is_orbiting = false;
 XMVECTOR orbit_target_pos = XMVectorSet(0.f, 0.f, 0.f, 1.f);
 
-// Selection
-internal instance *current_instance;
-internal float translation[3];
-internal float scale[3];
-internal float right_angle = 0.f;
-internal float up_angle = 0.f;
-internal float forward_angle = 0.f;
-internal std ::vector<render_item> selected_render_items;
+bool is_item_picked = false;
 
 extern "C" __declspec(dllexport) bool initialize()
 {
@@ -132,6 +135,10 @@ extern "C" __declspec(dllexport) bool initialize()
         return false;
     if (!compile_shader(L"..\\..\\3d_transforms\\shaders\\perspective.hlsl", L"PS", shader_type::pixel, &perspective_blob_ps))
         return false;
+    if (!compile_shader(L"..\\..\\3d_transforms\\shaders\\outline.hlsl", L"PS_outline", shader_type::pixel, &outline_blob_ps))
+        return false;
+    if (!compile_shader(L"..\\..\\3d_transforms\\shaders\\outline.hlsl", L"VS_outline", shader_type::vertex, &outline_blob_vs))
+        return false;
 
     for (UINT i = 0; i < NUM_BACK_BUFFERS; i++)
         frame_resources[i] = new frame_resource(device, i,
@@ -150,6 +157,14 @@ extern "C" __declspec(dllexport) bool initialize()
     hr = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&ui_requests_cmdalloc));
     ASSERT(SUCCEEDED(hr));
     ui_requests_cmdalloc->SetName(L"ui_requests_cmdalloc");
+
+    D3D12_DESCRIPTOR_HEAP_DESC srv_heap_desc;
+    srv_heap_desc.NodeMask = DEFAULT_NODE;
+    srv_heap_desc.NumDescriptors = MAX_RENDER_ITEMS;
+    srv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    srv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    hr = device->CreateDescriptorHeap(&srv_heap_desc, IID_PPV_ARGS(&instanceIDs_srv_heap));
+    ASSERT(SUCCEEDED(hr));
 
     hr = device->CreateCommandList(DEFAULT_NODE,
                                    D3D12_COMMAND_LIST_TYPE_DIRECT,
@@ -178,13 +193,20 @@ extern "C" __declspec(dllexport) bool initialize()
     param_inst.InitAsShaderResourceView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_VERTEX);
     params.push_back(param_inst);
 
+    // (root) StructuredBuffer<instance_id> cb_instance_ids : register(b2);
+    CD3DX12_ROOT_PARAMETER1 param_inst_id;
+    CD3DX12_DESCRIPTOR_RANGE1 range[1];
+    range[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NUM_RENDER_ITEMS, 1, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC);
+    param_inst_id.InitAsDescriptorTable(1, range);
+    params.push_back(param_inst_id);
+
     dr->create_rootsig(&params, L"main_rootsig");
 
     std::vector<D3D12_INPUT_ELEMENT_DESC> input_elem_descs;
     input_elem_descs.push_back({"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
     input_elem_descs.push_back({"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
 
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC default_pso_desc = dr->create_default_pso(&input_elem_descs, perspective_blob_vs, perspective_blob_ps);
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC default_pso_desc = dr->create_default_pso_desc(&input_elem_descs, perspective_blob_vs, perspective_blob_ps);
     default_pso_desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     hr = device->CreateGraphicsPipelineState(&default_pso_desc, IID_PPV_ARGS(&flat_color_pso));
     ASSERT(SUCCEEDED(hr));
@@ -194,10 +216,20 @@ extern "C" __declspec(dllexport) bool initialize()
     hr = device->CreateGraphicsPipelineState(&default_pso_desc, IID_PPV_ARGS(&line_pso));
     ASSERT(SUCCEEDED(hr));
 
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC wireframe_pso_desc = dr->create_default_pso(&input_elem_descs, perspective_blob_vs, perspective_blob_ps);
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC wireframe_pso_desc = dr->create_default_pso_desc(&input_elem_descs, perspective_blob_vs, perspective_blob_ps);
     wireframe_pso_desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     wireframe_pso_desc.RasterizerState.FillMode = D3D12_FILL_MODE_WIREFRAME;
     hr = device->CreateGraphicsPipelineState(&wireframe_pso_desc, IID_PPV_ARGS(&wireframe_pso));
+    ASSERT(SUCCEEDED(hr));
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC stencil_pso_desc = dr->create_default_pso_desc(&input_elem_descs, perspective_blob_vs, perspective_blob_ps);
+    stencil_pso_desc.DepthStencilState = create_stencil_dss();
+    hr = device->CreateGraphicsPipelineState(&stencil_pso_desc, IID_PPV_ARGS(&stencil_pso));
+    ASSERT(SUCCEEDED(hr));
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC outline_pso_desc = dr->create_default_pso_desc(&input_elem_descs, outline_blob_vs, outline_blob_ps);
+    outline_pso_desc.DepthStencilState = create_outline_dss();
+    hr = device->CreateGraphicsPipelineState(&outline_pso_desc, IID_PPV_ARGS(&outline_pso));
     ASSERT(SUCCEEDED(hr));
 
     //create triangle data
@@ -292,10 +324,10 @@ extern "C" __declspec(dllexport) bool initialize()
                      &bunny);
     geometries[mesh_name] = bunny;
 
-    for (int i = 0; i < NUM_RENDER_ITEMS; i++)
-    {
-        create_render_item("my cool bunny", mesh_name, i);
-    }
+    //for (int i = 0; i < NUM_RENDER_ITEMS; i++)
+    //{
+    //    create_render_item("my cool bunny", mesh_name, i);
+    //}
 
     cmdlist->Close();
     dr->cmd_queue->ExecuteCommandLists(1, (ID3D12CommandList *const *)&cmdlist);
@@ -309,13 +341,11 @@ internal void create_render_item(std::string name, std::wstring mesh_name, int i
     ri.meshes = geometries[mesh_name];
     ri.topology = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
     ri.cb_index = id;
-    ri.id = id;
     ri.vertex_count = ri.meshes.vertex_count;
     ri.index_count = ri.meshes.index_count;
     ri.name = name;
     XMMATRIX world = XMMatrixIdentity();
-    float amount = id * 3.f;
-    XMMATRIX t = XMMatrixTranslation(amount, amount, amount);
+    XMMATRIX t = XMMatrixTranslation(0.f, 0.f, 0.f);
     world = world * t;
     XMStoreFloat4x4(&ri.world, world);
 
@@ -327,13 +357,16 @@ internal void create_render_item(std::string name, std::wstring mesh_name, int i
         XMMATRIX world = XMMatrixIdentity();
 
         XMVECTOR right = XMVectorSet(1.f, 0.f, 0.f, 0.f);
-        XMVECTOR right_rot_quat = XMQuaternionRotationAxis(right, XMConvertToRadians(right_angle));
+        inst.right_angle = 0.f;
+        XMVECTOR right_rot_quat = XMQuaternionRotationAxis(right, XMConvertToRadians(inst.right_angle));
 
         XMVECTOR up = XMVectorSet(0.f, 1.f, 0.f, 0.f);
-        XMVECTOR up_rot_quat = XMQuaternionRotationAxis(up, XMConvertToRadians(up_angle));
+        inst.up_angle = 0.f;
+        XMVECTOR up_rot_quat = XMQuaternionRotationAxis(up, XMConvertToRadians(inst.up_angle));
 
         XMVECTOR forward = XMVectorSet(0.f, 0.f, 1.f, 0.f);
-        XMVECTOR forward_rot_quat = XMQuaternionRotationAxis(forward, XMConvertToRadians(forward_angle));
+        inst.forward_angle = 0.f;
+        XMVECTOR forward_rot_quat = XMQuaternionRotationAxis(forward, XMConvertToRadians(inst.forward_angle));
 
         XMVECTOR rot_quat = XMQuaternionMultiply(forward_rot_quat, XMQuaternionMultiply(right_rot_quat, up_rot_quat));
         XMMATRIX rot_mat = XMMatrixRotationQuaternion(rot_quat);
@@ -343,16 +376,34 @@ internal void create_render_item(std::string name, std::wstring mesh_name, int i
         inst.scale[2] = 1.f;
         XMMATRIX scale_mat = XMMatrixScaling(inst.scale[0], inst.scale[1], inst.scale[2]);
 
-        inst.translation[0] = i * 3.f;
-        inst.translation[1] = i * 3.f;
-        inst.translation[2] = i * 3.f;
+        inst.translation[0] = 0.f;
+        inst.translation[1] = 0.f;
+        inst.translation[2] = 0.f;
         XMMATRIX translation_mat = XMMatrixTranslation(inst.translation[0], inst.translation[1], inst.translation[2]);
         XMMATRIX srt = scale_mat * rot_mat * translation_mat;
         world = world * srt;
 
         XMStoreFloat4x4(&inst.shader_data.world, world);
-
+        inst.bounds = ri.meshes.bounds;
         ri.instances.push_back(inst);
+
+        // Create Instance IDs StructuredBuffer
+        D3D12_BUFFER_SRV buffer_srv_desc;
+        buffer_srv_desc.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+        buffer_srv_desc.NumElements = MAX_INSTANCE_COUNT_PER_OBJECT;
+        buffer_srv_desc.StructureByteStride = sizeof(UINT);
+        buffer_srv_desc.FirstElement = ri.cb_index * MAX_INSTANCE_COUNT_PER_OBJECT;
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc;
+        srv_desc.Buffer = buffer_srv_desc;
+        srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srv_desc.Format = DXGI_FORMAT_UNKNOWN;
+
+        size_t offset = ri.cb_index * dr->srv_desc_handle_incr_size;
+        D3D12_CPU_DESCRIPTOR_HANDLE offset_handle;
+        offset_handle.ptr = instanceIDs_srv_heap->GetCPUDescriptorHandleForHeapStart().ptr + offset;
+        device->CreateShaderResourceView(frame->sb_instanceIDs_upload->m_uploadbuffer, &srv_desc, offset_handle);
     }
     render_items.push_back(ri);
 }
@@ -396,14 +447,31 @@ internal void draw_render_items(ID3D12GraphicsCommandList *cmd_list, const std::
         cmd_list->IASetIndexBuffer(&ri.meshes.resource->ibv);
 
         cmd_list->SetGraphicsRootShaderResourceView(2, frame->sb_instancedata_upload->m_uploadbuffer->GetGPUVirtualAddress());
+        size_t offset = ri.cb_index * dr->srv_desc_handle_incr_size;
+        D3D12_GPU_DESCRIPTOR_HANDLE offset_handle;
+        offset_handle.ptr = instanceIDs_srv_heap->GetGPUDescriptorHandleForHeapStart().ptr + offset;
+        cmd_list->SetGraphicsRootDescriptorTable(3, offset_handle);
 
         size_t cb_offset = ri.cb_index * cb_size;
         cmd_list->SetGraphicsRootConstantBufferView(1, cb_resource_address + cb_offset);
+
+        // Write to stencil buffer
+        cmd_list->OMSetStencilRef(1);
+        cmd_list->SetPipelineState(stencil_pso);
+        cmd_list->DrawIndexedInstanced(ri.index_count, (UINT)ri.instances.size(), ri.start_index_location, ri.base_vertex_location, 0);
+        if (ri.is_selected)
+        {
+
+            // Draw scaled up outline
+            cmd_list->SetPipelineState(outline_pso);
+            cmd_list->DrawIndexedInstanced(ri.index_count, (UINT)ri.instances.size(), ri.start_index_location, ri.base_vertex_location, 0);
+        }
+        // Draw mesh
         cmd_list->DrawIndexedInstanced(ri.index_count, (UINT)ri.instances.size(), ri.start_index_location, ri.base_vertex_location, 0);
     }
 }
 
-DWORD __stdcall pick_and_load_model(void *param)
+DWORD __stdcall select_and_load_model(void *param)
 {
     ui_requests_cmdalloc->Reset();
     ui_requests_cmdlist->Reset(ui_requests_cmdalloc, nullptr);
@@ -433,18 +501,28 @@ DWORD __stdcall pick_and_load_model(void *param)
         std::vector<mesh_data> meshdata = import_meshdata(model_file);
         std::vector<submesh> submeshes;
 
+        XMVECTOR max_point = XMVectorZero();
+        XMVECTOR min_point = XMVectorZero();
+
         for (int i = 0; i < meshdata.size(); i++)
         {
             submesh new_submesh;
             new_submesh.name = meshdata[i].name;
             new_submesh.vertex_count = (UINT)meshdata[i].vertices.size();
             new_submesh.index_count = (UINT)meshdata[i].indices.size();
-            submeshes.push_back(new_submesh);
 
             for (int j = 0; j < meshdata[i].vertices.size(); j++)
             {
                 mesh_vertices.push_back(meshdata[i].vertices[j]);
+                XMFLOAT3 position = meshdata[i].vertices[j].position;
+
+                XMVECTOR point = XMLoadFloat3(&position);
+                min_point = XMVectorMin(min_point, point);
+                max_point = XMVectorMax(max_point, point);
             }
+
+            new_submesh.bounds.CreateFromPoints(new_submesh.bounds, min_point, max_point);
+            submeshes.push_back(new_submesh);
 
             for (int j = 0; j < meshdata[i].indices.size(); j++)
             {
@@ -456,6 +534,7 @@ DWORD __stdcall pick_and_load_model(void *param)
         const wchar_t *mesh_name = PathFindFileNameW(ofn.lpstrFile);
         mesh new_mesh;
         new_mesh.submeshes = submeshes;
+        new_mesh.bounds.CreateFromPoints(new_mesh.bounds, min_point, max_point);
 
         create_mesh_data(device, ui_requests_cmdlist, mesh_name,
                          sizeof(position_color), mesh_vertices.size(), (void *)mesh_vertices.data(),
@@ -463,7 +542,6 @@ DWORD __stdcall pick_and_load_model(void *param)
                          &new_mesh);
 
         geometries[mesh_name] = new_mesh;
-
 
         UINT id = (UINT)render_items.size();
         char id_str[12];
@@ -473,54 +551,6 @@ DWORD __stdcall pick_and_load_model(void *param)
         strcat(ri_name, id_str);
 
         create_render_item(ri_name, mesh_name, id);
-
-        //render_item ri;
-        //ri.meshes = geometries[mesh_name];
-        //ri.topology = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-        //ri.cb_index = id;
-        //ri.id = id;
-        //ri.vertex_count = ri.meshes.vertex_count;
-        //ri.index_count = ri.meshes.index_count;
-        //ri.name = _strdup(ri_name);
-        //XMStoreFloat4x4(&ri.world, XMMatrixIdentity());
-
-        //// create instance data
-        //ri.instances.resize(MAX_INSTANCE_COUNT_PER_OBJECT);
-
-        //for (int i = 0; i < MAX_INSTANCE_COUNT_PER_OBJECT; i++)
-        //{
-        //    instance *inst = &ri.instances[i];
-        //    inst->name = "instance_" + std::to_string(i);
-        //    XMVECTOR right = XMVectorSet(1.f, 0.f, 0.f, 0.f);
-        //    XMVECTOR right_rot_quat = XMQuaternionRotationAxis(right, XMConvertToRadians(right_angle));
-
-        //    XMVECTOR up = XMVectorSet(0.f, 1.f, 0.f, 0.f);
-        //    XMVECTOR up_rot_quat = XMQuaternionRotationAxis(up, XMConvertToRadians(up_angle));
-
-        //    XMVECTOR forward = XMVectorSet(0.f, 0.f, 1.f, 0.f);
-        //    XMVECTOR forward_rot_quat = XMQuaternionRotationAxis(forward, XMConvertToRadians(forward_angle));
-
-        //    XMVECTOR rot_quat = XMQuaternionMultiply(forward_rot_quat, XMQuaternionMultiply(right_rot_quat, up_rot_quat));
-        //    XMMATRIX rot_mat = XMMatrixRotationQuaternion(rot_quat);
-
-        //    XMMATRIX scale_mat = XMMatrixScaling(1.f, 1.f, 1.f);
-        //    inst->scale[0] = 1.f;
-        //    inst->scale[1] = 1.f;
-        //    inst->scale[2] = 1.f;
-
-        //    float start_offset = i * 3.f;
-        //    XMMATRIX translation_mat = XMMatrixTranslation(start_offset, start_offset, start_offset);
-        //    inst->translation[0] = start_offset;
-        //    inst->translation[1] = start_offset;
-        //    inst->translation[2] = start_offset;
-
-        //    XMMATRIX srt = translation_mat * rot_mat * scale_mat;
-        //    XMMATRIX world = XMMatrixIdentity();
-        //    world = world * srt;
-
-        //    XMStoreFloat4x4(&inst->shader_data.world, world);
-        //}
-        //render_items.push_back(ri);
 
         ui_requests_cmdlist->Close();
         dr->cmd_queue->ExecuteCommandLists(1, (ID3D12CommandList *const *)&ui_requests_cmdlist);
@@ -549,7 +579,7 @@ internal void update_camera()
     ImGui::SameLine();
     if (ImGui::Button("Reset camera position"))
     {
-        cam.position = XMVectorZero();
+        cam.position = cam.start_pos;
     }
 
     ImGui::SliderFloat("Camera roll", &cam.roll, -180.f, +180.f);
@@ -733,6 +763,7 @@ void imgui_nested_tree()
                     inst_pos[3] = inst.shader_data.world._44;
                     ImGui::InputFloat4("Position", inst_pos, 3);
                 };
+
                 tree_inst.on_select_callback = [ri](tree_item *ti) {
                     if (!ImGui::GetIO().KeyCtrl)
                     {
@@ -742,8 +773,13 @@ void imgui_nested_tree()
                         }
                         selected_items.clear();
                     }
+
                     *ti->is_selected = true;
                     selected_items.push_back(*ti);
+                    for (instance &inst : ri->instances)
+                    {
+                        inst.is_selected = true;
+                    }
                 };
                 instance_children.push_back(tree_inst);
             }
@@ -791,7 +827,7 @@ void imgui_nested_tree()
                 }
             };
 
-            tree_ri.on_select_callback = [](tree_item *ti) {
+            tree_ri.on_select_callback = [ri](tree_item *ti) {
                 // Clear render item and their submeshes selection when CTRL is not held
                 if (!ImGui::GetIO().KeyCtrl)
                 {
@@ -842,7 +878,7 @@ void imgui_update()
 
     if (ImGui::Button("Load model"))
     {
-        HANDLE ui_request_handle = CreateThread(nullptr, 0, pick_and_load_model, nullptr, 0, nullptr);
+        HANDLE ui_request_handle = CreateThread(nullptr, 0, select_and_load_model, nullptr, 0, nullptr);
         CloseHandle(ui_request_handle);
     }
 
@@ -850,42 +886,42 @@ void imgui_update()
     ImGui::End();
 
     ImGui::Begin("Selection", &show_selection);
-    if (current_instance)
+    if (selected_inst)
     {
-        ImGui::SliderFloat3("Translation", current_instance->translation, -20.f, 20.f);
+        ImGui::SliderFloat3("Translation", selected_inst->translation, -20.f, 20.f);
         ImGui::SameLine();
         if (ImGui::Button("Reset translation"))
         {
-            current_instance->translation[0] = 0.f;
-            current_instance->translation[1] = 0.f;
-            current_instance->translation[2] = 0.f;
+            selected_inst->translation[0] = 0.f;
+            selected_inst->translation[1] = 0.f;
+            selected_inst->translation[2] = 0.f;
         }
-        ImGui::SliderFloat("Right angle", &current_instance->right_angle, 0, 360);
+        ImGui::SliderFloat("Right angle", &selected_inst->right_angle, 0, 360);
         ImGui::SameLine();
         if (ImGui::Button("Reset right angle"))
         {
-            current_instance->right_angle = 0.f;
+            selected_inst->right_angle = 0.f;
         }
-        ImGui::SliderFloat("Up angle", &current_instance->up_angle, 0, 360);
+        ImGui::SliderFloat("Up angle", &selected_inst->up_angle, 0, 360);
         ImGui::SameLine();
         if (ImGui::Button("Reset up angle"))
         {
-            current_instance->up_angle = 0.f;
+            selected_inst->up_angle = 0.f;
         }
-        ImGui::SliderFloat("Forward angle", &current_instance->forward_angle, 0, 360);
+        ImGui::SliderFloat("Forward angle", &selected_inst->forward_angle, 0, 360);
         ImGui::SameLine();
         if (ImGui::Button("Reset forward angle"))
         {
-            current_instance->forward_angle = 0.f;
+            selected_inst->forward_angle = 0.f;
         }
 
-        ImGui::SliderFloat3("Scale", current_instance->scale, 01.f, 20.f);
+        ImGui::DragFloat3("Scale", selected_inst->scale, 0.01f, -20.f, 20.f);
         ImGui::SameLine();
         if (ImGui::Button("Reset scale"))
         {
-            current_instance->scale[0] = 1.f;
-            current_instance->scale[1] = 1.f;
-            current_instance->scale[2] = 1.f;
+            selected_inst->scale[0] = 1.f;
+            selected_inst->scale[1] = 1.f;
+            selected_inst->scale[2] = 1.f;
         }
     }
 
@@ -925,52 +961,57 @@ extern "C" __declspec(dllexport) bool update_and_render()
     // view matrix
     update_camera();
 
-    std::vector<instance> total_ri_instances;
-
+    total_ri_instances.clear();
     // update object constant data
     for (render_item &ri : render_items)
     {
         XMMATRIX world = XMLoadFloat4x4(&ri.world);
         XMFLOAT4X4 transposed;
         XMStoreFloat4x4(&transposed, XMMatrixTranspose(world));
-
         frame->cb_objconstant_upload->copy_data(ri.cb_index, (void *)&transposed);
 
-        // update instance data
-        for (int j = 0; j < ri.instances.size(); j++)
+        for (instance &inst : ri.instances)
         {
-            instance inst = ri.instances[j];
-            XMMATRIX inst_world = XMLoadFloat4x4(&inst.shader_data.world);
-            instance_data inst_shader_data;
-            XMStoreFloat4x4(&inst_shader_data.world, XMMatrixTranspose(inst_world));
-
-            if (inst.is_selected)
-            {
-                current_instance = &ri.instances[j];
-                XMVECTOR right = XMVectorSet(1.f, 0.f, 0.f, 0.f);
-                XMVECTOR right_rot_quat = XMQuaternionRotationAxis(right, XMConvertToRadians(current_instance->right_angle));
-
-                XMVECTOR up = XMVectorSet(0.f, 1.f, 0.f, 0.f);
-                XMVECTOR up_rot_quat = XMQuaternionRotationAxis(up, XMConvertToRadians(current_instance->up_angle));
-
-                XMVECTOR forward = XMVectorSet(0.f, 0.f, 1.f, 0.f);
-                XMVECTOR forward_rot_quat = XMQuaternionRotationAxis(forward, XMConvertToRadians(current_instance->forward_angle));
-
-                XMVECTOR rot_quat = XMQuaternionMultiply(forward_rot_quat, XMQuaternionMultiply(right_rot_quat, up_rot_quat));
-                XMMATRIX rot_mat = XMMatrixRotationQuaternion(rot_quat);
-
-                XMMATRIX scale_mat = XMMatrixScaling(current_instance->scale[0], current_instance->scale[1], current_instance->scale[2]);
-                XMMATRIX translation_mat = XMMatrixTranslation(current_instance->translation[0], current_instance->translation[1], current_instance->translation[2]);
-                XMMATRIX srt = scale_mat * rot_mat * translation_mat;
-
-                XMMATRIX new_world = XMMatrixIdentity();
-                new_world = new_world * srt;
-
-                XMStoreFloat4x4(&current_instance->shader_data.world, new_world);
-                XMStoreFloat4x4(&inst_shader_data.world, XMMatrixTranspose(inst_world));
-            }
-            frame->sb_instancedata_upload->copy_data(j, (void *)&inst_shader_data);
+            total_ri_instances.push_back(&inst);
         }
+    }
+
+    // update instance data
+    for (size_t i = 0; i < total_ri_instances.size(); i++)
+    {
+        frame->sb_instanceIDs_upload->copy_data((int)i, (void *)&i);
+
+        instance *inst = total_ri_instances[i];
+        XMMATRIX inst_world = XMLoadFloat4x4(&inst->shader_data.world);
+        instance_data inst_shader_data;
+        XMStoreFloat4x4(&inst_shader_data.world, XMMatrixTranspose(inst_world));
+
+        if (inst->is_selected)
+        {
+            selected_inst = inst;
+            XMVECTOR right = XMVectorSet(1.f, 0.f, 0.f, 0.f);
+            XMVECTOR right_rot_quat = XMQuaternionRotationAxis(right, XMConvertToRadians(selected_inst->right_angle));
+
+            XMVECTOR up = XMVectorSet(0.f, 1.f, 0.f, 0.f);
+            XMVECTOR up_rot_quat = XMQuaternionRotationAxis(up, XMConvertToRadians(selected_inst->up_angle));
+
+            XMVECTOR forward = XMVectorSet(0.f, 0.f, 1.f, 0.f);
+            XMVECTOR forward_rot_quat = XMQuaternionRotationAxis(forward, XMConvertToRadians(selected_inst->forward_angle));
+
+            XMVECTOR rot_quat = XMQuaternionMultiply(forward_rot_quat, XMQuaternionMultiply(right_rot_quat, up_rot_quat));
+            XMMATRIX rot_mat = XMMatrixRotationQuaternion(rot_quat);
+
+            XMMATRIX scale_mat = XMMatrixScaling(selected_inst->scale[0], selected_inst->scale[1], selected_inst->scale[2]);
+            XMMATRIX translation_mat = XMMatrixTranslation(selected_inst->translation[0], selected_inst->translation[1], selected_inst->translation[2]);
+            XMMATRIX srt = scale_mat * rot_mat * translation_mat;
+
+            XMMATRIX new_world = XMMatrixIdentity();
+            new_world = new_world * srt;
+
+            XMStoreFloat4x4(&selected_inst->shader_data.world, new_world);
+            XMStoreFloat4x4(&inst_shader_data.world, XMMatrixTranspose(inst_world));
+        }
+        frame->sb_instancedata_upload->copy_data((int)i, (void *)&inst_shader_data);
     }
 
     // render
@@ -1001,6 +1042,7 @@ extern "C" __declspec(dllexport) bool update_and_render()
         break;
     }
 
+    cmdlist->SetDescriptorHeaps(1, &instanceIDs_srv_heap);
     cmdlist->SetGraphicsRootSignature(dr->rootsig);
     cmdlist->SetGraphicsRootConstantBufferView(0, frame->cb_passdata_upload->m_uploadbuffer->GetGPUVirtualAddress());
     draw_render_items(cmdlist, &render_items);
@@ -1069,6 +1111,41 @@ void update_orbit(float x, float y)
     camera_forward = XMVector4Normalize(XMVectorSubtract(orbit_target_pos, cam.position));
 }
 
+void pick(const DirectX::XMMATRIX &to_projection, const DirectX::XMMATRIX &to_view, const float ndc_x, const float ndc_y)
+{
+    float p00 = to_projection.r[0].m128_f32[0];
+    float p11 = to_projection.r[1].m128_f32[1];
+
+    float point_x = ndc_x / p00;
+    float point_y = ndc_y / p11;
+
+    XMMATRIX inv_view = XMMatrixInverse(&XMMatrixDeterminant(to_view), to_view);
+    is_item_picked = false;
+
+    for (render_item &ri : render_items)
+    {
+        for (instance &inst : ri.instances)
+        {
+            XMVECTOR ray_origin = XMVectorSet(0.f, 0.f, 0.f, 1.f);
+            XMVECTOR ray_dir = XMVectorSet(point_x, point_y, 1.f, 0.f);
+
+            XMMATRIX inst_world = XMLoadFloat4x4(&inst.shader_data.world);
+            XMMATRIX inv_world = XMMatrixInverse(&XMMatrixDeterminant(inst_world), inst_world);
+            XMMATRIX view_to_local = inv_view * inv_world;
+
+            // Transform ray to local space of the current mesh we are testing against
+            ray_origin = XMVector3TransformCoord(ray_origin, view_to_local);
+            ray_dir = XMVector3Normalize(XMVector3TransformNormal(ray_dir, view_to_local));
+
+            float dist = 0.f;
+            if (inst.bounds.Intersects(ray_origin, ray_dir, dist))
+            {
+                ri.is_selected = true;
+            }
+        }
+    }
+}
+
 extern "C" __declspec(dllexport) void wndproc(UINT msg, WPARAM wParam, LPARAM lParam)
 {
     imgui_wndproc(msg, wParam, lParam);
@@ -1093,14 +1170,7 @@ extern "C" __declspec(dllexport) void wndproc(UINT msg, WPARAM wParam, LPARAM lP
 
                 if (GetAsyncKeyState(VK_MENU))
                 {
-                    if (is_orbiting == false)
-                    {
-                        // first time entering orbit mode
-                    }
-
                     is_orbiting = true;
-
-                    //update_orbit(dx, dy);
 
                     XMVECTOR start_cam_pos = cam.position;
 
@@ -1117,9 +1187,14 @@ extern "C" __declspec(dllexport) void wndproc(UINT msg, WPARAM wParam, LPARAM lP
 
                     XMMATRIX to_yaw = XMMatrixRotationY(dx);
                     XMMATRIX to_pitch = XMMatrixRotationAxis(camera_right, dy);
-                    XMMATRIX to_final = to_yaw * to_pitch;
+                    XMMATRIX to_rot = to_pitch * to_yaw; // apply global yaw to local pitch
 
-                    XMVECTOR rot_cam_forward = XMVector3Normalize(XMVector3Transform(camera_forward, to_final));
+                    XMVECTOR rot_cam_forward;
+                    rot_cam_forward = XMVector3Transform(camera_forward, to_rot);
+                    camera_right = XMVector3Transform(camera_right, to_rot);
+                    camera_up = XMVector3Transform(camera_up, to_rot);
+
+                    rot_cam_forward = XMVector3Normalize(rot_cam_forward);
 
                     // get the distance from the camera position to the object it orbits
                     XMVECTOR cam_to_target = XMVectorSubtract(orbit_target_pos, start_cam_pos);
@@ -1166,6 +1241,10 @@ extern "C" __declspec(dllexport) void wndproc(UINT msg, WPARAM wParam, LPARAM lP
         last_mouse_pos.y = ImGui::GetMousePos().y;
         break;
 
+    case WM_LBUTTONDOWN:
+        pick(XMMatrixTranspose(XMLoadFloat4x4(&pass.proj)), XMMatrixTranspose(XMLoadFloat4x4(&pass.view)), ndc_mouse_pos.x, ndc_mouse_pos.y);
+        break;
+
     default:
         break;
     }
@@ -1189,6 +1268,7 @@ extern "C" __declspec(dllexport) void cleanup()
     safe_release(cmdlist);
     safe_release(ui_requests_cmdlist);
     safe_release(ui_requests_cmdalloc);
+    safe_release(instanceIDs_srv_heap);
 
     for (std::pair<std::wstring, mesh> geometry : geometries)
     {

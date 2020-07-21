@@ -23,10 +23,11 @@ frame_resource::frame_resource(ID3D12Device *device, size_t frame_index, size_t 
     cb_objconstants_size = align_up(sizeof(object_data), D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
     cb_objconstant_upload = new upload_buffer(device, element_count, cb_objconstants_size, "obj_constants");
 
-    sb_instancedata_upload = new upload_buffer(device, instance_count, sizeof(instance_data), "instance_data");
-
     size_t cb_passdata_size = align_up(sizeof(pass_data), D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
     cb_passdata_upload = new upload_buffer(device, pass_count, cb_passdata_size, "pass_data");
+
+    sb_instancedata_upload = new upload_buffer(device, instance_count, sizeof(instance_data), "instance_data");
+    sb_instanceIDs_upload = new upload_buffer(device, instance_count, sizeof(UINT), "instance_IDs");
 }
 
 frame_resource::~frame_resource()
@@ -34,4 +35,5 @@ frame_resource::~frame_resource()
     delete cb_objconstant_upload;
     delete sb_instancedata_upload;
     delete cb_passdata_upload;
+    delete sb_instanceIDs_upload;
 }

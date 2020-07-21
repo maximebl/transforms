@@ -5,6 +5,8 @@
 #include "../imgui/imgui_impl_win32.h"
 
 internal ID3D12DescriptorHeap *imgui_srv_heap;
+DirectX::XMFLOAT2 mouse_pos;
+DirectX::XMFLOAT2 ndc_mouse_pos;
 
 void imgui_init(ID3D12Device *device)
 {
@@ -92,7 +94,7 @@ void imgui_app_combo()
     }
 }
 
-void imgui_pso_combo(int* view)
+void imgui_pso_combo(int *view)
 {
     const char *view_str[] = {"Flat color",
                               "Wireframe"};
@@ -124,8 +126,6 @@ void imgui_pso_combo(int* view)
 
 void imgui_mouse_pos()
 {
-    DirectX::XMFLOAT2 mouse_pos;
-    DirectX::XMFLOAT2 ndc_mouse_pos;
     mouse_pos.x = ImGui::GetMousePos().x;
     mouse_pos.y = ImGui::GetMousePos().y;
     ndc_mouse_pos.x = (2.f * mouse_pos.x / g_hwnd_width) - 1.f;

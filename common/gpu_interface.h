@@ -1,5 +1,6 @@
 #pragma once
 #include "common.h"
+#include <DirectXCollision.h>
 
 #define NUM_BACK_BUFFERS 3
 #define DEFAULT_NODE 1
@@ -32,6 +33,7 @@ struct submesh
     bool is_selected = false;
     UINT vertex_count = 0;
     UINT index_count = 0;
+    DirectX::BoundingBox bounds;
 };
 
 struct mesh_resource
@@ -48,6 +50,7 @@ struct mesh
 {
     std::wstring name;
     std::vector<submesh> submeshes;
+    DirectX::BoundingBox bounds;
     UINT cb_index = -1;
     UINT vertex_count = 0;
     UINT index_count = 0;
@@ -56,6 +59,8 @@ struct mesh
 
 COMMON_API std::vector<mesh_data> import_meshdata(const char *path);
 COMMON_API void set_viewport_rects(ID3D12GraphicsCommandList *cmd_list);
+COMMON_API D3D12_DEPTH_STENCIL_DESC create_outline_dss();
+COMMON_API D3D12_DEPTH_STENCIL_DESC create_stencil_dss();
 COMMON_API bool compile_shader(const wchar_t *file, const wchar_t *entry, shader_type type, ID3DBlob **blob);
 COMMON_API size_t align_up(size_t value, size_t alignment);
 COMMON_API void create_default_buffer(ID3D12Device *device, ID3D12GraphicsCommandList *cmd_list,
@@ -76,7 +81,7 @@ public:
     void create_rootsig(std::vector<CD3DX12_ROOT_PARAMETER1> *params, const wchar_t *name);
     void create_rendertargets();
     void create_dsv(UINT64 width, UINT height);
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC create_default_pso(std::vector<D3D12_INPUT_ELEMENT_DESC> *input_layouts, ID3DBlob *vs, ID3DBlob *ps);
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC create_default_pso_desc(std::vector<D3D12_INPUT_ELEMENT_DESC> *input_layouts, ID3DBlob *vs, ID3DBlob *ps);
     void resize_swapchain(int width, int height);
     void cleanup_rendertargets();
     void set_viewport_rects(ID3D12GraphicsCommandList *cmd_list);

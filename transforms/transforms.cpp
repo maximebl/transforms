@@ -40,8 +40,6 @@ size_t aligned_packed_uploadheap_size;
 UINT backbuffer_index = 0; // gets updated after each call to Present()
 UINT next_backbuffer_index = 0;
 UINT srv_desc_handle_incr_size = 0;
-static XMFLOAT2 mouse_pos;
-static XMFLOAT2 ndc_mouse_pos;
 static struct frame_context g_frame_context[NUM_BACK_BUFFERS];
 static ID3D12Device *g_device = NULL;
 static IDXGIAdapter4 *adapter = NULL;
@@ -1068,11 +1066,6 @@ void resize_swapchain(HWND hWnd, int width, int height)
 
 extern "C" __declspec(dllexport) bool update_and_render()
 {
-    mouse_pos.x = ImGui::GetMousePos().x;
-    mouse_pos.y = ImGui::GetMousePos().y;
-    ndc_mouse_pos.x = (2.f * mouse_pos.x / g_hwnd_width) - 1.f;
-    ndc_mouse_pos.y = -(2.f * mouse_pos.y / g_hwnd_height) + 1.f;
-
     frame_context *frame_ctx = WaitForNextFrameResources();
     frame_ctx->cmd_alloc->Reset();
     g_cmd_list->Reset(frame_ctx->cmd_alloc, NULL);
