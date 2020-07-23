@@ -676,10 +676,11 @@ size_t align_up(size_t value, size_t alignment)
     return ((value + (alignment - 1)) & ~(alignment - 1));
 }
 
-upload_buffer::upload_buffer(ID3D12Device *device, size_t element_count, size_t element_byte_size, const char *name)
+upload_buffer::upload_buffer(ID3D12Device *device, size_t max_element_count, size_t element_byte_size, const char *name)
     : m_element_byte_size(element_byte_size)
 {
-    m_buffer_size = (UINT)m_element_byte_size * (UINT)element_count;
+    m_max_element_count = max_element_count;
+    m_buffer_size = (UINT)m_element_byte_size * (UINT)max_element_count;
 
     device->CreateCommittedResource(
         &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
@@ -704,6 +705,11 @@ upload_buffer::~upload_buffer()
 
     m_mapped_data = nullptr;
     safe_release(m_uploadbuffer);
+}
+
+void upload_buffer::clear_data()
+{
+    ZeroMemory(m_mapped_data, m_buffer_size);
 }
 
 void upload_buffer::copy_data(int elementIndex, const void *data)

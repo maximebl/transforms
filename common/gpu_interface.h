@@ -131,10 +131,12 @@ public:
     upload_buffer(ID3D12Device *device, size_t element_count, size_t element_byte_size, const char *name);
     ~upload_buffer();
     void copy_data(int elementIndex, const void *data);
+    void clear_data();
 
     const char *name;
     ID3D12Resource *m_uploadbuffer = nullptr;
     UINT m_buffer_size = 0;
+    UINT m_max_element_count = 0;
     BYTE *m_mapped_data = nullptr;
     size_t m_element_byte_size = 0;
 };

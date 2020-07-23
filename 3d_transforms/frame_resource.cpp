@@ -28,6 +28,7 @@ frame_resource::frame_resource(ID3D12Device *device, size_t frame_index, size_t 
 
     sb_instancedata_upload = new upload_buffer(device, instance_count, sizeof(instance_data), "instance_data");
     sb_instanceIDs_upload = new upload_buffer(device, instance_count, sizeof(UINT), "instance_IDs");
+    sb_selected_instanceIDs_upload = new upload_buffer(device, instance_count, sizeof(UINT), "selected_instance_IDs");
 }
 
 frame_resource::~frame_resource()
@@ -36,4 +37,5 @@ frame_resource::~frame_resource()
     delete sb_instancedata_upload;
     delete cb_passdata_upload;
     delete sb_instanceIDs_upload;
+    delete sb_selected_instanceIDs_upload;
 }

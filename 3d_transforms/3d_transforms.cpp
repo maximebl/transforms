@@ -65,7 +65,6 @@ internal gpu_query *query = nullptr;
 internal double imgui_gpu_time = 0;
 
 // Application state
-internal std ::vector<render_item> selected_render_items;
 internal float bg_color[4] = {0.f, 0.f, 0.f, 1.f};
 internal bool is_vsync = true;
 internal bool show_demo = true;
@@ -76,11 +75,11 @@ internal bool show_selection = true;
 
 // Render items data
 #define MAX_RENDER_ITEMS 10
-#define NUM_RENDER_ITEMS 1
-#define MAX_INSTANCE_COUNT_PER_OBJECT 1
+#define MAX_INSTANCE_COUNT_PER_OBJECT 2
 internal std::vector<render_item> render_items;
 
 // Instance data
+internal int num_selected_instances = 0;
 internal std::vector<instance *> total_ri_instances;
 internal instance *selected_inst;
 internal ID3D12DescriptorHeap *instanceIDs_srv_heap = nullptr;
@@ -188,17 +187,27 @@ extern "C" __declspec(dllexport) bool initialize()
     param_obj.InitAsConstantBufferView(1, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_VERTEX);
     params.push_back(param_obj);
 
-    //(root) StructuredBuffer<instance> sb_instance : register(t0);
+    // (root) StructuredBuffer<instance> sb_instance : register(t0);
     CD3DX12_ROOT_PARAMETER1 param_inst;
     param_inst.InitAsShaderResourceView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_VERTEX);
     params.push_back(param_inst);
 
-    // (root) StructuredBuffer<instance_id> cb_instance_ids : register(b2);
+    // (root) StructuredBuffer<uint> cb_instance_ids : register(t1);
     CD3DX12_ROOT_PARAMETER1 param_inst_id;
     CD3DX12_DESCRIPTOR_RANGE1 range[1];
-    range[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NUM_RENDER_ITEMS, 1, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC);
+    range[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, MAX_RENDER_ITEMS, 2, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE);
     param_inst_id.InitAsDescriptorTable(1, range);
     params.push_back(param_inst_id);
+
+    // (root) StructuredBuffer<uint> sb_selected_instance_ids : register(t2);
+    CD3DX12_ROOT_PARAMETER1 param_selected_inst_ids;
+    param_selected_inst_ids.InitAsShaderResourceView(1, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_VERTEX);
+    params.push_back(param_selected_inst_ids);
+
+    // (root) ConstantBuffer<uint> cb_selected_insts_size : register(b2);
+    CD3DX12_ROOT_PARAMETER1 param_selected_inst_size;
+    param_selected_inst_size.InitAsConstants(1, 2, 0, D3D12_SHADER_VISIBILITY_VERTEX);
+    params.push_back(param_selected_inst_size);
 
     dr->create_rootsig(&params, L"main_rootsig");
 
@@ -316,13 +325,13 @@ extern "C" __declspec(dllexport) bool initialize()
         }
     }
 
-    mesh_name = L"bunny";
-    mesh bunny;
-    create_mesh_data(device, cmdlist, mesh_name,
-                     sizeof(position_color), bunny_vertices.size(), (void *)bunny_vertices.data(),
-                     sizeof(WORD), bunny_indices.size(), (void *)bunny_indices.data(),
-                     &bunny);
-    geometries[mesh_name] = bunny;
+    //mesh_name = L"bunny";
+    //mesh bunny;
+    //create_mesh_data(device, cmdlist, mesh_name,
+    //                 sizeof(position_color), bunny_vertices.size(), (void *)bunny_vertices.data(),
+    //                 sizeof(WORD), bunny_indices.size(), (void *)bunny_indices.data(),
+    //                 &bunny);
+    //geometries[mesh_name] = bunny;
 
     //for (int i = 0; i < NUM_RENDER_ITEMS; i++)
     //{
@@ -386,25 +395,26 @@ internal void create_render_item(std::string name, std::wstring mesh_name, int i
         XMStoreFloat4x4(&inst.shader_data.world, world);
         inst.bounds = ri.meshes.bounds;
         ri.instances.push_back(inst);
-
-        // Create Instance IDs StructuredBuffer
-        D3D12_BUFFER_SRV buffer_srv_desc;
-        buffer_srv_desc.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-        buffer_srv_desc.NumElements = MAX_INSTANCE_COUNT_PER_OBJECT;
-        buffer_srv_desc.StructureByteStride = sizeof(UINT);
-        buffer_srv_desc.FirstElement = ri.cb_index * MAX_INSTANCE_COUNT_PER_OBJECT;
-
-        D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc;
-        srv_desc.Buffer = buffer_srv_desc;
-        srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srv_desc.Format = DXGI_FORMAT_UNKNOWN;
-
-        size_t offset = ri.cb_index * dr->srv_desc_handle_incr_size;
-        D3D12_CPU_DESCRIPTOR_HANDLE offset_handle;
-        offset_handle.ptr = instanceIDs_srv_heap->GetCPUDescriptorHandleForHeapStart().ptr + offset;
-        device->CreateShaderResourceView(frame->sb_instanceIDs_upload->m_uploadbuffer, &srv_desc, offset_handle);
     }
+
+    // Create Instance IDs StructuredBuffer
+    D3D12_BUFFER_SRV buffer_srv_desc;
+    buffer_srv_desc.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+    buffer_srv_desc.NumElements = MAX_INSTANCE_COUNT_PER_OBJECT;
+    buffer_srv_desc.StructureByteStride = sizeof(UINT);
+    buffer_srv_desc.FirstElement = ri.cb_index * MAX_INSTANCE_COUNT_PER_OBJECT;
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc;
+    srv_desc.Buffer = buffer_srv_desc;
+    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv_desc.Format = DXGI_FORMAT_UNKNOWN;
+
+    size_t offset = ri.cb_index * dr->srv_desc_handle_incr_size;
+    D3D12_CPU_DESCRIPTOR_HANDLE offset_handle;
+    offset_handle.ptr = instanceIDs_srv_heap->GetCPUDescriptorHandleForHeapStart().ptr + offset;
+    device->CreateShaderResourceView(frame->sb_instanceIDs_upload->m_uploadbuffer, &srv_desc, offset_handle);
+
     render_items.push_back(ri);
 }
 
@@ -447,6 +457,7 @@ internal void draw_render_items(ID3D12GraphicsCommandList *cmd_list, const std::
         cmd_list->IASetIndexBuffer(&ri.meshes.resource->ibv);
 
         cmd_list->SetGraphicsRootShaderResourceView(2, frame->sb_instancedata_upload->m_uploadbuffer->GetGPUVirtualAddress());
+
         size_t offset = ri.cb_index * dr->srv_desc_handle_incr_size;
         D3D12_GPU_DESCRIPTOR_HANDLE offset_handle;
         offset_handle.ptr = instanceIDs_srv_heap->GetGPUDescriptorHandleForHeapStart().ptr + offset;
@@ -455,13 +466,19 @@ internal void draw_render_items(ID3D12GraphicsCommandList *cmd_list, const std::
         size_t cb_offset = ri.cb_index * cb_size;
         cmd_list->SetGraphicsRootConstantBufferView(1, cb_resource_address + cb_offset);
 
+        // Number of selected instances
+        cmdlist->SetGraphicsRoot32BitConstant(5, (UINT)num_selected_instances, 0);
+
+        // List of selected instance IDs
+        cmd_list->SetGraphicsRootShaderResourceView(4, frame->sb_selected_instanceIDs_upload->m_uploadbuffer->GetGPUVirtualAddress());
+
         // Write to stencil buffer
         cmd_list->OMSetStencilRef(1);
         cmd_list->SetPipelineState(stencil_pso);
         cmd_list->DrawIndexedInstanced(ri.index_count, (UINT)ri.instances.size(), ri.start_index_location, ri.base_vertex_location, 0);
+
         if (ri.is_selected)
         {
-
             // Draw scaled up outline
             cmd_list->SetPipelineState(outline_pso);
             cmd_list->DrawIndexedInstanced(ri.index_count, (UINT)ri.instances.size(), ri.start_index_location, ri.base_vertex_location, 0);
@@ -531,7 +548,7 @@ DWORD __stdcall select_and_load_model(void *param)
         }
 
         PathRemoveExtensionW(ofn.lpstrFile);
-        const wchar_t *mesh_name = PathFindFileNameW(ofn.lpstrFile);
+        wchar_t *mesh_name = PathFindFileNameW(ofn.lpstrFile);
         mesh new_mesh;
         new_mesh.submeshes = submeshes;
         new_mesh.bounds.CreateFromPoints(new_mesh.bounds, min_point, max_point);
@@ -541,15 +558,14 @@ DWORD __stdcall select_and_load_model(void *param)
                          sizeof(WORD), mesh_indices.size(), (void *)mesh_indices.data(),
                          &new_mesh);
 
-        geometries[mesh_name] = new_mesh;
-
         UINT id = (UINT)render_items.size();
-        char id_str[12];
-        sprintf(id_str, "_%u", id);
+        wchar_t id_str[12];
+        wsprintf(id_str, L"_%u", id);
+        StrCatW(mesh_name, id_str);
         char ri_name[MAX_PATH];
         wcstombs(ri_name, mesh_name, 100);
-        strcat(ri_name, id_str);
 
+        geometries[mesh_name] = new_mesh;
         create_render_item(ri_name, mesh_name, id);
 
         ui_requests_cmdlist->Close();
@@ -697,6 +713,76 @@ void imgui_nested_tree()
 {
     if (ImGui::CollapsingHeader("Render items"))
     {
+        // Render items
+        for (size_t i = 0; i < render_items.size(); i++)
+        {
+            render_item *ri = &render_items[i];
+
+            ImGui::PushID((int)i);
+            bool is_expanded = ImGui::TreeNodeExV((void *)nullptr, ImGuiTreeNodeFlags_FramePadding, "", nullptr);
+            ImGui::SameLine();
+            if (ImGui::Selectable(ri->name.c_str(), ri->is_selected))
+            {
+                if (!ImGui::GetIO().KeyCtrl)
+                {
+                    for (render_item &ri : render_items)
+                    {
+                        ri.is_selected = false;
+                        for (instance &ri_inst : ri.instances)
+                        {
+                            ri_inst.is_selected = false;
+                        }
+                    }
+                }
+                ri->is_selected = true;
+                for (instance& inst : ri->instances)
+                {
+                    inst.is_selected = true;
+                }
+            }
+
+            if (is_expanded)
+            {
+                // Instances
+                for (size_t j = 0; j < ri->instances.size(); j++)
+                {
+                    instance &inst = ri->instances[j];
+
+                    ImGui::PushID((int)j);
+                    bool is_expanded = ImGui::TreeNodeExV((void *)nullptr, ImGuiTreeNodeFlags_FramePadding, "", nullptr);
+                    ImGui::SameLine();
+                    if (ImGui::Selectable(inst.name.c_str(), inst.is_selected))
+                    {
+                        if (!ImGui::GetIO().KeyCtrl)
+                        {
+                            for (render_item &ri : render_items)
+                            {
+                                ri.is_selected = false;
+                                for (instance &ri_inst : ri.instances)
+                                {
+                                    ri_inst.is_selected = false;
+                                }
+                            }
+                        }
+                        inst.is_selected = true;
+                        ri->is_selected = true;
+                    }
+                    if (is_expanded)
+                    {
+
+                        ImGui::TreePop();
+                    }
+                    ImGui::PopID();
+                }
+
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+        }
+    }
+
+    if (ImGui::CollapsingHeader("Render items old"))
+    {
         float indentation = 10.f;
         for (size_t i = 0; i < render_items.size(); i++)
         {
@@ -776,10 +862,6 @@ void imgui_nested_tree()
 
                     *ti->is_selected = true;
                     selected_items.push_back(*ti);
-                    for (instance &inst : ri->instances)
-                    {
-                        inst.is_selected = true;
-                    }
                 };
                 instance_children.push_back(tree_inst);
             }
@@ -864,6 +946,14 @@ void imgui_nested_tree()
 
 void imgui_update()
 {
+    if (GetAsyncKeyState(VK_ESCAPE))
+        for (render_item &ri : render_items)
+        {
+            ri.is_selected = false;
+            for (instance &inst : ri.instances)
+                inst.is_selected = false;
+        }
+
     if (GetAsyncKeyState(VK_ESCAPE))
         for (tree_item &item : selected_items)
         {
@@ -977,9 +1067,16 @@ extern "C" __declspec(dllexport) bool update_and_render()
     }
 
     // update instance data
+    num_selected_instances = 0;
+    frame->sb_selected_instanceIDs_upload->clear_data();
     for (size_t i = 0; i < total_ri_instances.size(); i++)
     {
         frame->sb_instanceIDs_upload->copy_data((int)i, (void *)&i);
+
+        if (total_ri_instances[i]->is_selected)
+        {
+            frame->sb_selected_instanceIDs_upload->copy_data(num_selected_instances++, (void *)&i);
+        }
 
         instance *inst = total_ri_instances[i];
         XMMATRIX inst_world = XMLoadFloat4x4(&inst->shader_data.world);
@@ -1265,6 +1362,8 @@ extern "C" __declspec(dllexport) void cleanup()
     safe_release(flat_color_pso);
     safe_release(line_pso);
     safe_release(wireframe_pso);
+    safe_release(outline_pso);
+    safe_release(stencil_pso);
     safe_release(cmdlist);
     safe_release(ui_requests_cmdlist);
     safe_release(ui_requests_cmdalloc);

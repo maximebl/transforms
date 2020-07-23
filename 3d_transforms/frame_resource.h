@@ -39,6 +39,7 @@ public:
     upload_buffer *cb_objconstant_upload = nullptr;
     upload_buffer *sb_instancedata_upload = nullptr;
     upload_buffer *sb_instanceIDs_upload = nullptr;
+    upload_buffer *sb_selected_instanceIDs_upload = nullptr;
     upload_buffer *cb_passdata_upload = nullptr;
     size_t cb_objconstants_size = 0;
 };
