@@ -546,7 +546,7 @@ void cleanup_rendertarget()
         }
 }
 
-internal void init_pipeline()
+s_internal void init_pipeline()
 {
     ID3DBlob *rs_blob = NULL;
 
@@ -739,12 +739,12 @@ void WaitForLastSubmittedFrame()
     DWORD wait_result = WaitForSingleObject(g_fence_event, INFINITE);
     /*PIXEndEvent_gpu(g_cmd_queue);*/
 
-    /*switch (wait_result)*/
-    /*{*/
-    /*case WAIT_OBJECT_0:*/
-    /*PIXNotifyWakeFromFenceSignal( g_fence_event);  // The event was successfully signaled, so notify PIX*/
-    /*break;*/
-    /*}*/
+    switch (wait_result)
+    {
+    case WAIT_OBJECT_0:
+        PIXNotifyWakeFromFenceSignal(g_fence_event); // The event was successfully signaled, so notify PIX*/
+        break;
+    }
     g_fence->SetEventOnCompletion(fence_value, g_fence_event);
 }
 
@@ -763,7 +763,14 @@ frame_context *WaitForNextFrameResources()
         waitable_objects[1] = g_fence_event;
         num_waitable_obj = 2;
     }
-    WaitForMultipleObjects(num_waitable_obj, waitable_objects, TRUE, INFINITE);
+    DWORD wait_result = WaitForMultipleObjects(num_waitable_obj, waitable_objects, TRUE, INFINITE);
+
+    switch (wait_result)
+    {
+    case WAIT_OBJECT_0:
+        PIXNotifyWakeFromFenceSignal(g_fence_event); // The event was successfully signaled, so notify PIX*/
+        break;
+    }
 
     return frame_ctx;
 }
@@ -1170,12 +1177,11 @@ extern "C" __declspec(dllexport) bool update_and_render()
         char buf_handlecount[50];
         sprintf(buf_handlecount, "%lld / %d", quads.size(), max_quads);
         ImGui::Text(buf_handlecount);
-
     }
 
     //render
 
-    queries->start_query("frame_rendering");
+    queries->start("frame_rendering");
 
     D3D12_RECT rect;
     rect.left = 0;
@@ -1317,8 +1323,8 @@ extern "C" __declspec(dllexport) bool update_and_render()
         }
     }
 
-    queries->start_query("triangle_rendering");
-    queries->start_query("quads_and_tri");
+    queries->start("triangle_rendering");
+    queries->start("quads_and_tri");
     // draw triangles
     for (int i = 0; i < total_tris_torender; ++i)
     {
@@ -1330,9 +1336,9 @@ extern "C" __declspec(dllexport) bool update_and_render()
         g_cmd_list->IASetVertexBuffers(0, 1, &triangles[i].vbv);
         g_cmd_list->DrawInstanced(3, tri_instance_count, 0, 0);
     }
-    queries->end_query("triangle_rendering");
+    queries->stop("triangle_rendering");
 
-    queries->start_query("quads_rendering");
+    queries->start("quads_rendering");
     // draw quads
     for (int i = 0; i < quads.size(); i++)
     {
@@ -1358,15 +1364,17 @@ extern "C" __declspec(dllexport) bool update_and_render()
         g_cmd_list->SetPipelineState(quad_pso);
         g_cmd_list->DrawIndexedInstanced(6, 1, 0, 0, 0);
     }
-    queries->end_query("quads_and_tri");
-    queries->end_query("quads_rendering");
+    queries->stop("quads_and_tri");
+    queries->stop("quads_rendering");
 
-    queries->start_query("ui_rendering");
+    queries->start("ui_rendering");
 
+    PIXBeginEvent(g_cmd_list, 0, "imgui_render");
     imgui_render(g_cmd_list);
+    PIXEndEvent();
 
-    queries->end_query("ui_rendering");
-    queries->end_query("frame_rendering");
+    queries->stop("ui_rendering");
+    queries->stop("frame_rendering");
     queries->resolve();
 
     g_cmd_list->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(

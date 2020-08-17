@@ -83,6 +83,7 @@ device_resources::device_resources() : last_signaled_fence_value(0)
     ASSERT(SUCCEEDED(hr));
 
     swapchain_event = swapchain->GetFrameLatencyWaitableObject();
+    cpu_wait_event = CreateEventEx(nullptr, NULL, NULL, EVENT_ALL_ACCESS);
 
     {
         D3D12_DESCRIPTOR_HEAP_DESC rtv_heap_desc;
@@ -284,9 +285,6 @@ void device_resources::cleanup_rendertargets()
 
 device_resources::~device_resources()
 {
-#ifdef DEBUG
-    safe_release(debug);
-#endif // DEBUG
     safe_release(rootsig);
     safe_release(dsv_heap);
     safe_release(dsv_resource);
@@ -308,6 +306,7 @@ device_resources::~device_resources()
     safe_release(fence);
     safe_release(device);
     CloseHandle(swapchain_event);
+    CloseHandle(cpu_wait_event);
 }
 
 void device_resources::cpu_wait(UINT64 fence_value)
@@ -317,11 +316,31 @@ void device_resources::cpu_wait(UINT64 fence_value)
     if (fence->GetCompletedValue() >= fence_value)
         return; // We're already exactly at that fence value, or past that fence value
 
-    HANDLE event = CreateEventEx(nullptr, NULL, NULL, EVENT_ALL_ACCESS);
-    fence->SetEventOnCompletion(fence_value, event);
+    fence->SetEventOnCompletion(fence_value, cpu_wait_event);
 
-    WaitForSingleObject(event, INFINITE);
-    CloseHandle(event);
+    DWORD status = WaitForSingleObject(cpu_wait_event, INFINITE);
+
+    if (status == WAIT_OBJECT_0)
+    {
+        PIXNotifyWakeFromFenceSignal(cpu_wait_event);
+    }
+}
+
+void device_resources::cpu_wait_for_present_and_fence(UINT64 fence_value)
+{
+    HANDLE waitable_objects[] = {swapchain_event, NULL};
+
+    if (fence_value != 0)
+    {
+        fence->SetEventOnCompletion(fence_value, cpu_wait_event);
+        waitable_objects[1] = cpu_wait_event;
+    }
+
+    DWORD status = WaitForMultipleObjects(_countof(waitable_objects), waitable_objects, TRUE, INFINITE);
+    if (status == WAIT_OBJECT_0)
+    {
+        PIXNotifyWakeFromFenceSignal(cpu_wait_event);
+    }
 }
 
 void device_resources::flush_cmd_queue()
@@ -676,10 +695,10 @@ size_t align_up(size_t value, size_t alignment)
     return ((value + (alignment - 1)) & ~(alignment - 1));
 }
 
-upload_buffer::upload_buffer(ID3D12Device *device, size_t max_element_count, size_t element_byte_size, const char *name)
+upload_buffer::upload_buffer(ID3D12Device *device, size_t max_element_count, size_t element_byte_size, const char* name)
     : m_element_byte_size(element_byte_size)
 {
-    m_max_element_count = max_element_count;
+    m_max_element_count = (UINT)max_element_count;
     m_buffer_size = (UINT)m_element_byte_size * (UINT)max_element_count;
 
     device->CreateCommittedResource(
@@ -716,3 +735,43 @@ void upload_buffer::copy_data(int elementIndex, const void *data)
 {
     memcpy(&m_mapped_data[elementIndex * m_element_byte_size], data, m_element_byte_size);
 }
+
+//void device_resources::draw_debug_lines(ID3D12GraphicsCommandList *cmd_list, std::vector<debug_line *> *debug_lines)
+//{
+//    if (!is_line_buffer_ready)
+//    {
+//        compile_shader(L"..\\..\\3d_transforms\\shaders\\debug_fx.hlsl", L"VS", shader_type::vertex, &debugfx_blob_vs);
+//        compile_shader(L"..\\..\\3d_transforms\\shaders\\debug_fx.hlsl", L"PS", shader_type::pixel, &debugfx_blob_ps);
+//
+//        std::vector<D3D12_INPUT_ELEMENT_DESC> input_elem_descs;
+//        input_elem_descs.push_back({"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
+//        input_elem_descs.push_back({"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
+//
+//        D3D12_GRAPHICS_PIPELINE_STATE_DESC default_pso_desc = create_default_pso_desc(&input_elem_descs, debugfx_blob_vs, debugfx_blob_ps);
+//        default_pso_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+//        default_pso_desc.VS = {debugfx_blob_vs->GetBufferPointer(), debugfx_blob_vs->GetBufferSize()};
+//        hr = device->CreateGraphicsPipelineState(&default_pso_desc, IID_PPV_ARGS(&line_pso));
+//        ASSERT(SUCCEEDED(hr));
+//
+//        debug_lines->push_back(&orbit_line);
+//        size_t line_stride = sizeof(position_color);
+//        size_t lines_byte_size = line_stride * max_debug_lines;
+//        debug_lines_upload = new upload_buffer(device, 1, lines_byte_size, "debug_lines");
+//
+//        debug_lines_vbv = {};
+//        debug_lines_vbv.BufferLocation = debug_lines_upload->m_uploadbuffer->GetGPUVirtualAddress();
+//        debug_lines_vbv.SizeInBytes = (UINT)lines_byte_size;
+//        debug_lines_vbv.StrideInBytes = (UINT)line_stride;
+//        is_line_buffer_ready = true;
+//    }
+//
+//    if (debug_lines->size() > 0)
+//    {
+//        debug_lines_upload->copy_data(0, (void *)*debug_lines->data());
+//
+//        cmd_list->SetPipelineState(line_pso);
+//        cmd_list->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
+//        cmd_list->IASetVertexBuffers(0, 1, &debug_lines_vbv);
+//        cmd_list->DrawInstanced(2, 1, 0, 0);
+//    }
+//}

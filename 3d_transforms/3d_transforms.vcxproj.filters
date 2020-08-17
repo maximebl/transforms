@@ -41,4 +41,7 @@
     <FxCompile Include="shaders\debug_fx.hlsl" />
     <FxCompile Include="shaders\outline.hlsl" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="packages.config" />
+  </ItemGroup>
 </Project>

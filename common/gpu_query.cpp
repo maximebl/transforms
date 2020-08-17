@@ -21,8 +21,7 @@ gpu_query::gpu_query(ID3D12Device *device, ID3D12GraphicsCommandList *cmd_list, 
 
     hr = device->CreateQueryHeap(
         &query_heap_desc,
-        __uuidof(ID3D12QueryHeap),
-        (void **)&m_query_heap);
+        IID_PPV_ARGS(&m_query_heap));
     ASSERT(SUCCEEDED(hr));
     m_query_heap->SetName(L"timestamp_query_heap");
 
@@ -32,8 +31,7 @@ gpu_query::gpu_query(ID3D12Device *device, ID3D12GraphicsCommandList *cmd_list, 
         &CD3DX12_RESOURCE_DESC::Buffer(sizeof(UINT64) * m_timer_count),
         D3D12_RESOURCE_STATE_COPY_DEST,
         NULL,
-        __uuidof(ID3D12Resource),
-        (void **)&m_query_rb_buffer);
+        IID_PPV_ARGS(&m_query_rb_buffer));
 
     ASSERT(SUCCEEDED(hr));
     m_query_rb_buffer->SetName(L"queries_rb_resource");
@@ -45,7 +43,7 @@ gpu_query::~gpu_query()
     safe_release(m_query_rb_buffer);
 }
 
-void gpu_query::start_query(const char *query_name)
+void gpu_query::start(std::string query_name)
 {
     if (m_queries.find(query_name) == m_queries.end())
         m_queries[query_name].index = m_num_queries++;
@@ -56,7 +54,7 @@ void gpu_query::start_query(const char *query_name)
     m_cmd_list->EndQuery(m_query_heap, D3D12_QUERY_TYPE_TIMESTAMP, buffer_start);
 }
 
-void gpu_query::end_query(const char *query_name)
+void gpu_query::stop(std::string query_name)
 {
     UINT buffer_start = m_queries[query_name].buffer_start;
     UINT buffer_end = buffer_start + 1;
@@ -64,7 +62,7 @@ void gpu_query::end_query(const char *query_name)
     m_cmd_list->EndQuery(m_query_heap, D3D12_QUERY_TYPE_TIMESTAMP, buffer_end);
 }
 
-double gpu_query::result(const char *query_name)
+double gpu_query::result(std::string query_name)
 {
     UINT buffer_start = m_queries[query_name].buffer_start;
     UINT buffer_end = m_queries[query_name].buffer_end;

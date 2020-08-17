@@ -34,7 +34,7 @@ class frame_resource : public frame_cmd
 {
 public:
     frame_resource() = default;
-    frame_resource(ID3D12Device *device, size_t frame_index, size_t element_count, size_t instance_count, size_t pass_count);
+    frame_resource(ID3D12Device *device, size_t frame_index, size_t element_count, size_t instance_count);
     ~frame_resource();
     upload_buffer *cb_objconstant_upload = nullptr;
     upload_buffer *sb_instancedata_upload = nullptr;

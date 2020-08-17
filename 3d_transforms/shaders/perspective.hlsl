@@ -38,7 +38,6 @@ struct vertex_out
     float4 color : COLOR;
 };
 
-
 float4 instance_mvp(float3 pos, uint inst_id, matrix SRT)
 {
     uint current_instanceID = sb_instance_ids[inst_id];

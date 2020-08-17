@@ -1,9 +1,33 @@
 #pragma once
 #include "common.h"
 #include <DirectXCollision.h>
+#include "pix3.h"
 
-#define NUM_BACK_BUFFERS 3
-#define DEFAULT_NODE 1
+constexpr int NUM_BACK_BUFFERS = 3;
+constexpr int DEFAULT_NODE = 0;
+
+#if defined(_DEBUG) || defined(DBG)
+inline void set_name(ID3D12Object *object, LPCWSTR name)
+{
+    object->SetName(name);
+}
+inline void set_name_indexed(ID3D12Object *object, LPCWSTR name, UINT index)
+{
+    WCHAR fullname[50];
+    if (swprintf_s(fullname, L"%s[%u]", name, index) > 0)
+        object->SetName(fullname);
+}
+#else
+inline void set_name(ID3D12Object *, LPCWSTR)
+{
+}
+inline void set_name_indexed(ID3D12Object *, LPCWSTR, UINT)
+{
+}
+#endif
+
+#define NAME_D3D12_OBJECT(x) set_name((x), L#x)
+#define NAME_D3D12_OBJECT_INDEXED(x, n) set_name_indexed((x), L#x, n)
 
 enum shader_type
 {
@@ -72,59 +96,6 @@ COMMON_API void create_mesh_data(ID3D12Device *device, ID3D12GraphicsCommandList
                                  size_t index_stride, size_t index_count, void *index_data,
                                  mesh *mesh);
 
-class COMMON_API device_resources
-{
-public:
-    device_resources();
-    ~device_resources();
-
-    void create_rootsig(std::vector<CD3DX12_ROOT_PARAMETER1> *params, const wchar_t *name);
-    void create_rendertargets();
-    void create_dsv(UINT64 width, UINT height);
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC create_default_pso_desc(std::vector<D3D12_INPUT_ELEMENT_DESC> *input_layouts, ID3DBlob *vs, ID3DBlob *ps);
-    void resize_swapchain(int width, int height);
-    void cleanup_rendertargets();
-    void set_viewport_rects(ID3D12GraphicsCommandList *cmd_list);
-    void cpu_wait(UINT64 fence_value);
-    void flush_cmd_queue();
-    void wait_present();
-    void wait_last_frame();
-    UINT64 signal();
-    void present(bool is_vsync);
-    void resize(int width, int height);
-
-    // shader objects
-    ID3D12RootSignature *rootsig;
-
-    // device objects
-    ID3D12Device *device;
-    IDXGIFactory6 *dxgi_factory;
-    ID3D12Debug1 *debug;
-    IDXGIAdapter4 *adapter;
-    IDXGISwapChain3 *swapchain;
-
-    // core resources
-    ID3D12DescriptorHeap *rtv_desc_heap;
-    ID3D12DescriptorHeap *dsv_heap;
-    ID3D12Resource *dsv_resource;
-    DXGI_FORMAT dsv_format = DXGI_FORMAT_D24_UNORM_S8_UINT;
-    DXGI_FORMAT rtv_format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    UINT swapchain_flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT | DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
-
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv_descriptors[NUM_BACK_BUFFERS];
-    ID3D12Resource *main_rt_resources[NUM_BACK_BUFFERS];
-    UINT srv_desc_handle_incr_size;
-    UINT rtv_handle_incr_size;
-
-    // command objects
-    //frame_cmd frame_cmds[NUM_BACK_BUFFERS];
-    ID3D12CommandQueue *cmd_queue;
-    ID3D12Fence *fence;
-    HANDLE swapchain_event; //Signals when the DXGI adapter finished presenting a new frame
-    UINT64 last_signaled_fence_value;
-    UINT backbuffer_index; //Gets updated after each call to Present()
-};
-
 class COMMON_API upload_buffer
 {
 public:
@@ -139,4 +110,75 @@ public:
     UINT m_max_element_count = 0;
     BYTE *m_mapped_data = nullptr;
     size_t m_element_byte_size = 0;
+};
+
+class COMMON_API device_resources
+{
+public:
+    device_resources();
+    ~device_resources();
+
+    void create_rootsig(std::vector<CD3DX12_ROOT_PARAMETER1> *params, const wchar_t *name);
+    void create_rendertargets();
+    void create_dsv(UINT64 width, UINT height);
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC create_default_pso_desc(std::vector<D3D12_INPUT_ELEMENT_DESC> *input_layouts, ID3DBlob *vs, ID3DBlob *ps);
+    void resize_swapchain(int width, int height);
+    void cleanup_rendertargets();
+    void set_viewport_rects(ID3D12GraphicsCommandList *cmd_list);
+    void cpu_wait(UINT64 fence_value);
+    void cpu_wait_for_present_and_fence(UINT64 fence_value);
+    void flush_cmd_queue();
+    void wait_present();
+    void wait_last_frame();
+    UINT64 signal();
+    void present(bool is_vsync);
+    void resize(int width, int height);
+
+    // shader objects
+    ID3D12RootSignature *rootsig = nullptr;
+
+    // device objects
+    ID3D12Device *device = nullptr;
+    IDXGIFactory6 *dxgi_factory = nullptr;
+    ID3D12Debug1 *debug = nullptr;
+    IDXGIAdapter4 *adapter = nullptr;
+    IDXGISwapChain3 *swapchain = nullptr;
+
+    // core resources
+    ID3D12DescriptorHeap *rtv_desc_heap = nullptr;
+    ID3D12DescriptorHeap *dsv_heap = nullptr;
+    ID3D12Resource *dsv_resource = nullptr;
+    DXGI_FORMAT dsv_format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    DXGI_FORMAT rtv_format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    UINT swapchain_flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT | DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv_descriptors[NUM_BACK_BUFFERS];
+    ID3D12Resource *main_rt_resources[NUM_BACK_BUFFERS];
+    UINT srv_desc_handle_incr_size = 0;
+    UINT rtv_handle_incr_size = 0;
+
+    // command objects
+    HANDLE cpu_wait_event;
+    ID3D12CommandQueue *cmd_queue = nullptr;
+    ID3D12Fence *fence = nullptr;
+    HANDLE swapchain_event = nullptr; //Signals when the DXGI adapter finished presenting a new frame
+    UINT64 last_signaled_fence_value = 0;
+    UINT backbuffer_index = 0; //Gets updated after each call to Present()
+
+    // Debug effects
+    //const int max_debug_lines = 1000;
+    //upload_buffer *debug_lines_upload = nullptr;
+    //D3D12_VERTEX_BUFFER_VIEW debug_lines_vbv = {};
+    //struct debug_line
+    //{
+    //    position_color start;
+    //    position_color end;
+    //};
+    //debug_line orbit_line;
+    //std::vector<debug_line *> debug_lines;
+    //void draw_debug_lines(ID3D12GraphicsCommandList *cmd_list, std::vector<debug_line *> *debug_lines);
+    //bool is_line_buffer_ready = false;
+    //ID3D12PipelineState *line_pso = nullptr;
+    //ID3DBlob *debugfx_blob_vs = nullptr;
+    //ID3DBlob *debugfx_blob_ps = nullptr;
 };

@@ -21,28 +21,10 @@
     <ClInclude Include="pch.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="common.h">
+    <ClInclude Include="frame_resource.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="gpu_interface.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="gpu_query.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="d3dx12.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="imgui_helpers.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="math_helpers.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="step_timer.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="camera.h">
+    <ClInclude Include="mcallister_system.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
@@ -50,26 +32,20 @@
     <ClCompile Include="pch.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="dllmain.cpp">
+    <ClCompile Include="particles.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="common.cpp">
+    <ClCompile Include="frame_resource.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="gpu_interface.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="gpu_query.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="math_helpers.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="camera.cpp">
+    <ClCompile Include="mcallister_system.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
+  </ItemGroup>
+  <ItemGroup>
+    <FxCompile Include="shaders\default.hlsl" />
   </ItemGroup>
 </Project>

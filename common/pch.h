@@ -16,5 +16,7 @@
 #include <DirectXMath.h>
 #include "d3dx12.h"
 #include "stdlib.h"
+#include <tchar.h>
+#include <cstddef>
 
 #endif //PCH_H

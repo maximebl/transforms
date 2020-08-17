@@ -1,10 +1,11 @@
 #pragma once
 #include "common.h"
+#include <gpu_interface.h>
 #include "../imgui/imgui.h"
 #include "../imgui/imgui_impl_dx12.h"
 #include "../imgui/imgui_impl_win32.h"
 
-internal ID3D12DescriptorHeap *imgui_srv_heap;
+s_internal ID3D12DescriptorHeap *imgui_srv_heap = nullptr;
 DirectX::XMFLOAT2 mouse_pos;
 DirectX::XMFLOAT2 ndc_mouse_pos;
 
@@ -59,7 +60,10 @@ void imgui_shutdown()
 {
     ImGui_ImplDX12_Shutdown();
     ImGui_ImplWin32_Shutdown();
-    ImGui::DestroyContext();
+    if (ImGui::GetCurrentContext())
+    {
+        ImGui::DestroyContext();
+    }
     safe_release(imgui_srv_heap);
 }
 
@@ -194,4 +198,9 @@ void imgui_gpu_memory(IDXGIAdapter4 *adapter)
     ImGui::ProgressBar((float)nonlocal_usage / (float)nonlocal_budget, ImVec2(0.f, 0.f));
     ImGui::Unindent(10.f);
     ImGui::Separator();
+}
+
+bool is_hovering_window()
+{
+    return ImGui::IsAnyWindowHovered() || ImGui::IsAnyItemHovered() || ImGui::IsAnyItemFocused() || ImGui::IsAnyWindowFocused();
 }

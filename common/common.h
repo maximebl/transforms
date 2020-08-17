@@ -1,8 +1,7 @@
 #pragma once
 #include "pch.h"
-#include <tchar.h>
 
-#define internal static
+#define s_internal static
 
 #ifdef COMMON_EXPORTS
 #define COMMON_API __declspec(dllexport)
@@ -30,9 +29,9 @@ enum demos
 extern COMMON_API demos demo_to_show;
 extern COMMON_API bool demo_changed;
 
-COMMON_API void get_dll_path();
-COMMON_API void set_dll_path(const wchar_t *path);
+COMMON_API void set_dll_paths(const wchar_t *path);
 COMMON_API void failed_assert(const char *file, int line, const char *statement);
+COMMON_API std::string last_error();
 
 #define ASSERT(b) \
     if (!(b))     \
@@ -47,5 +46,3 @@ COMMON_API void failed_assert(const char *file, int line, const char *statement)
             (p) = NULL;     \
         }                   \
     } while ((void)0, 0)
-
-

@@ -4,6 +4,7 @@
 #include <d3d12.h>
 #include <unordered_map>
 #include <vector>
+#include <string>
 
 class gpu_query
 {
@@ -11,10 +12,10 @@ public:
     COMMON_API gpu_query(ID3D12Device *device, ID3D12GraphicsCommandList *cmd_list, ID3D12CommandQueue *cmd_queue, UINT *backbuffer_index, UINT num_queries);
     COMMON_API ~gpu_query();
 
-    COMMON_API void start_query(const char *query_name);
-    COMMON_API void end_query(const char *query_name);
+    COMMON_API void start(std::string query_name);
+    COMMON_API void stop(std::string query_name);
     COMMON_API void resolve();
-    COMMON_API double result(const char *query_name);
+    COMMON_API double result(std::string query_name);
 
 private:
     ID3D12GraphicsCommandList *m_cmd_list;
@@ -33,6 +34,6 @@ private:
         UINT buffer_end;
         UINT index;
     };
-    std::unordered_map<const char *, query_info> m_queries;
+    std::unordered_map<std::string, query_info> m_queries;
 
 };

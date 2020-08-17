@@ -9,12 +9,14 @@
 #include <algorithm>
 #include "shlwapi.h"
 #include "math_helpers.h"
-#include "cameraz.h"
+#include "camera.h"
 #include <functional>
-#include <numeric> // std::iota
-camera cam;
 
 using namespace DirectX;
+
+camera cam = camera((float)g_hwnd_width / (float)g_hwnd_height,
+                    XMConvertToRadians(45.f),
+                    XMVectorSet(0.f, 0.f, -10.f, 1.f));
 
 extern "C" __declspec(dllexport) bool update_and_render();
 extern "C" __declspec(dllexport) void resize(int width, int height);
@@ -22,21 +24,20 @@ extern "C" __declspec(dllexport) void cleanup();
 extern "C" __declspec(dllexport) void wndproc(UINT msg, WPARAM wParam, LPARAM lParam);
 extern "C" __declspec(dllexport) bool initialize();
 
-internal void init_pipeline();
-internal void create_render_item(std::string name, std::wstring mesh_name, int id);
-internal void draw_render_items(ID3D12GraphicsCommandList *cmd_list, const std::vector<render_item> *render_items);
-internal void update_camera();
-internal void update_orbit(float x, float y);
+s_internal void init_pipeline();
+s_internal void create_render_item(std::string name, std::wstring mesh_name, int id);
+s_internal void draw_render_items(ID3D12GraphicsCommandList *cmd_list, const std::vector<render_item> *render_items);
+s_internal void update_camera();
 
-// command objects
-internal device_resources *dr = nullptr;
-internal ID3D12Device *device = nullptr;
-internal ID3D12GraphicsCommandList *cmdlist = nullptr;
-internal ID3D12GraphicsCommandList *ui_requests_cmdlist = nullptr;
-internal ID3D12CommandAllocator *ui_requests_cmdalloc = nullptr;
-internal ID3D12CommandAllocator *cmd_alloc = nullptr;
-internal frame_resource *frame_resources[NUM_BACK_BUFFERS];
-internal frame_resource *frame = nullptr;
+// Command objects
+s_internal device_resources *dr = nullptr;
+s_internal ID3D12Device *device = nullptr;
+s_internal ID3D12GraphicsCommandList *cmdlist = nullptr;
+s_internal ID3D12GraphicsCommandList *ui_requests_cmdlist = nullptr;
+s_internal ID3D12CommandAllocator *ui_requests_cmdalloc = nullptr;
+s_internal ID3D12CommandAllocator *cmd_alloc = nullptr;
+s_internal frame_resource *frame_resources[NUM_BACK_BUFFERS];
+s_internal frame_resource *frame = nullptr;
 
 // PSOs
 enum views
@@ -44,75 +45,57 @@ enum views
     flat_color = 0,
     wireframe
 };
-internal views shading;
-internal ID3D12PipelineState *flat_color_pso = nullptr;
-internal ID3D12PipelineState *line_pso = nullptr;
-internal ID3D12PipelineState *wireframe_pso = nullptr;
-internal ID3D12PipelineState *stencil_pso = nullptr;
-internal ID3D12PipelineState *outline_pso = nullptr;
+s_internal views shading;
+s_internal ID3D12PipelineState *flat_color_pso = nullptr;
+s_internal ID3D12PipelineState *wireframe_pso = nullptr;
+s_internal ID3D12PipelineState *stencil_pso = nullptr;
+s_internal ID3D12PipelineState *outline_pso = nullptr;
 
 // Shader data
-internal ID3DBlob *debugfx_blob_vs = nullptr;
-internal ID3DBlob *debugfx_blob_ps = nullptr;
-internal ID3DBlob *perspective_blob_vs = nullptr;
-internal ID3DBlob *perspective_blob_ps = nullptr;
-internal ID3DBlob *outline_blob_ps = nullptr;
-internal ID3DBlob *outline_blob_vs = nullptr;
+s_internal ID3DBlob *perspective_blob_vs = nullptr;
+s_internal ID3DBlob *perspective_blob_ps = nullptr;
+s_internal ID3DBlob *outline_blob_ps = nullptr;
+s_internal ID3DBlob *outline_blob_vs = nullptr;
 
 // Queries data
 #define NUM_QUERIES 5
-internal gpu_query *query = nullptr;
-internal double imgui_gpu_time = 0;
+s_internal gpu_query *query = nullptr;
+s_internal double imgui_gpu_time = 0;
 
 // Application state
-internal float bg_color[4] = {0.f, 0.f, 0.f, 1.f};
-internal bool is_vsync = true;
-internal bool show_demo = true;
-internal bool show_main = true;
-internal bool show_debug = true;
-internal bool show_perf = true;
-internal bool show_selection = true;
+s_internal float bg_color[4] = {0.f, 0.f, 0.f, 1.f};
+s_internal bool is_vsync = true;
+s_internal bool show_demo = true;
+s_internal bool show_main = true;
+s_internal bool show_debug = true;
+s_internal bool show_perf = true;
+s_internal bool show_selection = true;
+s_internal float translation[3] = {};
+s_internal float scale[3] = {1.f, 1.f, 1.f};
+s_internal float right_angle = 0.f;
+s_internal float up_angle = 0.f;
+s_internal float forward_angle = 0.f;
 
 // Render items data
 #define MAX_RENDER_ITEMS 10
 #define MAX_INSTANCE_COUNT_PER_OBJECT 2
-internal std::vector<render_item> render_items;
+s_internal std::vector<render_item> render_items;
 
 // Instance data
-internal int num_selected_instances = 0;
-internal std::vector<instance *> total_ri_instances;
-internal instance *selected_inst;
-internal ID3D12DescriptorHeap *instanceIDs_srv_heap = nullptr;
+s_internal int num_selected_instances = 0;
+s_internal std::vector<instance *> total_ri_instances;
+s_internal instance *selected_inst;
+s_internal ID3D12DescriptorHeap *instanceIDs_srv_heap = nullptr;
 
 // Geometry
-internal std::unordered_map<std::wstring, mesh> geometries;
-
-// Debug effects
-#define MAX_DEBUG_LINES 1000
-upload_buffer *debug_lines_upload = nullptr;
-D3D12_VERTEX_BUFFER_VIEW debug_lines_vbv = {};
-struct debug_line
-{
-    position_color start;
-    position_color end;
-};
-internal debug_line orbit_line;
-internal std::vector<debug_line *> debug_lines;
-internal void draw_debug_lines(ID3D12GraphicsCommandList *cmd_list, const std::vector<debug_line *> *debug_lines);
-bool is_line_buffer_ready = false;
+s_internal std::unordered_map<std::wstring, mesh> geometries;
 
 // Camera
-internal pass_data pass;
-internal float radius = 5.0f;
-internal ImVec2 last_mouse_pos;
-internal float dx_angle = 0.f;
-internal float dy_angle = 0.f;
-
-XMVECTOR camera_forward = XMVectorSet(0.f, 0.f, 1.f, 0.f);
-XMVECTOR camera_right = XMVectorSet(1.f, 0.f, 0.f, 0.f);
-XMVECTOR camera_up = XMVectorSet(0.f, 1.f, 0.f, 0.f);
-bool is_orbiting = false;
-XMVECTOR orbit_target_pos = XMVectorSet(0.f, 0.f, 0.f, 1.f);
+s_internal pass_data pass;
+//internal float radius = 5.0f;
+s_internal ImVec2 last_mouse_pos;
+s_internal float dx_angle = 0.f;
+s_internal float dy_angle = 0.f;
 
 bool is_item_picked = false;
 
@@ -126,10 +109,6 @@ extern "C" __declspec(dllexport) bool initialize()
 
     imgui_init(dr->device);
 
-    if (!compile_shader(L"..\\..\\3d_transforms\\shaders\\debug_fx.hlsl", L"VS", shader_type::vertex, &debugfx_blob_vs))
-        return false;
-    if (!compile_shader(L"..\\..\\3d_transforms\\shaders\\debug_fx.hlsl", L"PS", shader_type::pixel, &debugfx_blob_ps))
-        return false;
     if (!compile_shader(L"..\\..\\3d_transforms\\shaders\\perspective.hlsl", L"VS", shader_type::vertex, &perspective_blob_vs))
         return false;
     if (!compile_shader(L"..\\..\\3d_transforms\\shaders\\perspective.hlsl", L"PS", shader_type::pixel, &perspective_blob_ps))
@@ -142,8 +121,7 @@ extern "C" __declspec(dllexport) bool initialize()
     for (UINT i = 0; i < NUM_BACK_BUFFERS; i++)
         frame_resources[i] = new frame_resource(device, i,
                                                 MAX_RENDER_ITEMS,
-                                                MAX_RENDER_ITEMS * MAX_INSTANCE_COUNT_PER_OBJECT,
-                                                1);
+                                                MAX_RENDER_ITEMS * MAX_INSTANCE_COUNT_PER_OBJECT);
     frame = frame_resources[0];
 
     hr = device->CreateCommandList(DEFAULT_NODE,
@@ -218,11 +196,6 @@ extern "C" __declspec(dllexport) bool initialize()
     D3D12_GRAPHICS_PIPELINE_STATE_DESC default_pso_desc = dr->create_default_pso_desc(&input_elem_descs, perspective_blob_vs, perspective_blob_ps);
     default_pso_desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     hr = device->CreateGraphicsPipelineState(&default_pso_desc, IID_PPV_ARGS(&flat_color_pso));
-    ASSERT(SUCCEEDED(hr));
-
-    default_pso_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
-    default_pso_desc.VS = {debugfx_blob_vs->GetBufferPointer(), debugfx_blob_vs->GetBufferSize()};
-    hr = device->CreateGraphicsPipelineState(&default_pso_desc, IID_PPV_ARGS(&line_pso));
     ASSERT(SUCCEEDED(hr));
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC wireframe_pso_desc = dr->create_default_pso_desc(&input_elem_descs, perspective_blob_vs, perspective_blob_ps);
@@ -344,7 +317,7 @@ extern "C" __declspec(dllexport) bool initialize()
     return true;
 }
 
-internal void create_render_item(std::string name, std::wstring mesh_name, int id)
+s_internal void create_render_item(std::string name, std::wstring mesh_name, int id)
 {
     render_item ri;
     ri.meshes = geometries[mesh_name];
@@ -418,34 +391,7 @@ internal void create_render_item(std::string name, std::wstring mesh_name, int i
     render_items.push_back(ri);
 }
 
-internal void draw_debug_lines(ID3D12GraphicsCommandList *cmd_list, std::vector<debug_line *> *debug_lines)
-{
-    if (!is_line_buffer_ready)
-    {
-        debug_lines->push_back(&orbit_line);
-        size_t line_stride = sizeof(position_color);
-        size_t lines_byte_size = line_stride * MAX_DEBUG_LINES;
-        debug_lines_upload = new upload_buffer(device, 1, lines_byte_size, "debug_lines");
-
-        debug_lines_vbv = {};
-        debug_lines_vbv.BufferLocation = debug_lines_upload->m_uploadbuffer->GetGPUVirtualAddress();
-        debug_lines_vbv.SizeInBytes = (UINT)lines_byte_size;
-        debug_lines_vbv.StrideInBytes = (UINT)line_stride;
-        is_line_buffer_ready = true;
-    }
-
-    if (debug_lines->size() > 0)
-    {
-        debug_lines_upload->copy_data(0, (void *)*debug_lines->data());
-
-        cmdlist->SetPipelineState(line_pso);
-        cmdlist->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
-        cmdlist->IASetVertexBuffers(0, 1, &debug_lines_vbv);
-        cmdlist->DrawInstanced(2, 1, 0, 0);
-    }
-}
-
-internal void draw_render_items(ID3D12GraphicsCommandList *cmd_list, const std::vector<render_item> *render_items)
+s_internal void draw_render_items(ID3D12GraphicsCommandList *cmd_list, const std::vector<render_item> *render_items)
 {
     size_t cb_size = frame->cb_objconstants_size;
     size_t cb_resource_address = frame->cb_objconstant_upload->m_uploadbuffer->GetGPUVirtualAddress();
@@ -574,110 +520,88 @@ DWORD __stdcall select_and_load_model(void *param)
     return 0;
 }
 
-internal void update_camera()
+s_internal void update_camera()
 {
-    ImGui::SliderFloat4("Right direction", camera_right.m128_f32, -1.f, 1.f);
+    ImGui::SliderFloat4("Right direction", cam.right.m128_f32, -1.f, 1.f);
     ImGui::SameLine();
     if (ImGui::Button("Reset right direction"))
-        camera_right = XMVectorSet(1.f, 0.f, 0.f, 0.f);
+        cam.right = XMVectorSet(1.f, 0.f, 0.f, 0.f);
 
-    ImGui::SliderFloat4("Up direction", camera_up.m128_f32, -1.f, 1.f);
+    ImGui::SliderFloat4("Up direction", cam.up.m128_f32, -1.f, 1.f);
     ImGui::SameLine();
     if (ImGui::Button("Reset up direction"))
-        camera_up = XMVectorSet(0.f, 1.f, 0.f, 0.f);
+        cam.up = XMVectorSet(0.f, 1.f, 0.f, 0.f);
 
-    ImGui::SliderFloat4("Forward direction", camera_forward.m128_f32, -1.f, 1.f);
+    ImGui::SliderFloat4("Forward direction", cam.forward.m128_f32, -1.f, 1.f);
     ImGui::SameLine();
     if (ImGui::Button("Reset forward direction"))
-        camera_forward = XMVectorSet(0.f, 0.f, 1.f, 0.f);
+        cam.forward = XMVectorSet(0.f, 0.f, 1.f, 0.f);
 
     ImGui::SliderFloat4("Camera position", cam.position.m128_f32, -150.f, 150.f);
     ImGui::SameLine();
     if (ImGui::Button("Reset camera position"))
     {
-        cam.position = cam.start_pos;
+        cam.position = cam.m_start_pos;
     }
 
     ImGui::SliderFloat("Camera roll", &cam.roll, -180.f, +180.f);
     ImGui::SliderFloat("Camera pitch", &cam.pitch, -180.f, +180.f);
     ImGui::SliderFloat("Camera yaw", &cam.yaw, -180.f, +180.f);
-    ImGui::Checkbox("is orbiting", &is_orbiting);
 
-    camera_forward = XMVector3Normalize(camera_forward);
-    // scale camera_dir by 15 units
-    XMVECTOR scaled_cam_dir = XMVectorScale(camera_forward, 15.f);
-    XMVECTOR default_orbit_target = cam.position + scaled_cam_dir;
-    orbit_target_pos = default_orbit_target;
+    cam.forward = XMVector3Normalize(cam.forward);
 
     for (render_item &ri : render_items)
+    {
         for (instance &inst : ri.instances)
             if (inst.is_selected == true)
             {
-                orbit_target_pos.m128_f32[0] = inst.shader_data.world._41;
-                orbit_target_pos.m128_f32[1] = inst.shader_data.world._42;
-                orbit_target_pos.m128_f32[2] = inst.shader_data.world._43;
-                orbit_target_pos.m128_f32[3] = inst.shader_data.world._44;
-                ImGui::SliderFloat4("Orbit target position", orbit_target_pos.m128_f32, -50.f, 50.f);
+                cam.orbit_target_pos.m128_f32[0] = inst.shader_data.world._41;
+                cam.orbit_target_pos.m128_f32[1] = inst.shader_data.world._42;
+                cam.orbit_target_pos.m128_f32[2] = inst.shader_data.world._43;
+                cam.orbit_target_pos.m128_f32[3] = inst.shader_data.world._44;
+                ImGui::SliderFloat4("Orbit target position", cam.orbit_target_pos.m128_f32, -50.f, 50.f);
             }
+    }
 
     XMVECTOR s = XMVectorReplicate(0.02f);
     if (GetAsyncKeyState('E'))
     {
-        cam.position = XMVectorMultiplyAdd(-s, camera_up, cam.position);
+        cam.position = XMVectorMultiplyAdd(-s, cam.up, cam.position);
     }
 
     if (GetAsyncKeyState('Q'))
     {
-        cam.position = XMVectorMultiplyAdd(s, camera_up, cam.position);
+        cam.position = XMVectorMultiplyAdd(s, cam.up, cam.position);
     }
 
     if (GetAsyncKeyState('W'))
     {
-        cam.position = XMVectorMultiplyAdd(s, camera_forward, cam.position);
+        cam.position = XMVectorMultiplyAdd(s, cam.forward, cam.position);
     }
     if (GetAsyncKeyState('S'))
     {
-        cam.position = XMVectorMultiplyAdd(-s, camera_forward, cam.position);
+        cam.position = XMVectorMultiplyAdd(-s, cam.forward, cam.position);
     }
     if (GetAsyncKeyState('A'))
     {
-        cam.position = XMVectorMultiplyAdd(-s, camera_right, cam.position);
+        cam.position = XMVectorMultiplyAdd(-s, cam.right, cam.position);
     }
     if (GetAsyncKeyState('D'))
     {
-        cam.position = XMVectorMultiplyAdd(s, camera_right, cam.position);
+        cam.position = XMVectorMultiplyAdd(s, cam.right, cam.position);
     }
 
-    camera_up = XMVector3Normalize(camera_up);
-    camera_forward = XMVector3Normalize(camera_forward);
-    camera_right = XMVector3Cross(camera_up, camera_forward);
-    camera_up = XMVector3Normalize(XMVector3Cross(camera_forward, camera_right));
-
-    // Camera translation
-    float x = -XMVectorGetX(XMVector3Dot(camera_right, cam.position));
-    float y = -XMVectorGetX(XMVector3Dot(camera_up, cam.position));
-    float z = -XMVectorGetX(XMVector3Dot(camera_forward, cam.position));
-
-    XMMATRIX T;
-    T.r[0] = camera_right;
-    T.r[0].m128_f32[3] = x;
-
-    T.r[1] = camera_up;
-    T.r[1].m128_f32[3] = y;
-
-    T.r[2] = camera_forward;
-    T.r[2].m128_f32[3] = z;
-
-    T.r[3] = XMVectorSet(0.f, 0.f, 0.f, 1.f);
-
-    XMMATRIX view = T;
-    XMStoreFloat4x4(&pass.view, view);
+    //XMMATRIX view = T;
+    //XMStoreFloat4x4(&pass.view, view);
 
     // projection matrix
-    float aspect_ratio = (float)g_hwnd_width / (float)g_hwnd_height;
-    XMMATRIX proj = XMMatrixTranspose(XMMatrixPerspectiveFovLH(0.25f * XM_PI, aspect_ratio, 1.0f, 1000.0f));
-    XMStoreFloat4x4(&pass.proj, proj);
+    //float aspect_ratio = (float)g_hwnd_width / (float)g_hwnd_height;
+    //XMMATRIX proj = XMMatrixTranspose(XMMatrixPerspectiveFovLH(0.25f * XM_PI, aspect_ratio, 1.0f, 1000.0f));
+    //XMStoreFloat4x4(&pass.proj, proj);
 
+    cam.update_view();
+    XMStoreFloat4x4(&pass.view, cam.view);
+    XMStoreFloat4x4(&pass.proj, XMMatrixTranspose(cam.proj));
     frame->cb_passdata_upload->copy_data(0, (void *)&pass);
 }
 
@@ -735,7 +659,7 @@ void imgui_nested_tree()
                     }
                 }
                 ri->is_selected = true;
-                for (instance& inst : ri->instances)
+                for (instance &inst : ri->instances)
                 {
                     inst.is_selected = true;
                 }
@@ -769,6 +693,14 @@ void imgui_nested_tree()
                     }
                     if (is_expanded)
                     {
+                        ImGui::SliderFloat3("Translation", inst.translation, -20.f, 20.f);
+                        ImGui::SameLine();
+                        if (ImGui::Button("Reset translation"))
+                        {
+                            inst.translation[0] = 0.f;
+                            inst.translation[1] = 0.f;
+                            inst.translation[2] = 0.f;
+                        }
 
                         ImGui::TreePop();
                     }
@@ -947,19 +879,25 @@ void imgui_nested_tree()
 void imgui_update()
 {
     if (GetAsyncKeyState(VK_ESCAPE))
+    {
+        cam.orbit_target_pos = cam.default_orbit_target;
+
         for (render_item &ri : render_items)
         {
             ri.is_selected = false;
             for (instance &inst : ri.instances)
                 inst.is_selected = false;
         }
+    }
 
     if (GetAsyncKeyState(VK_ESCAPE))
+    {
         for (tree_item &item : selected_items)
         {
             *item.is_selected = false;
             selected_items.clear();
         }
+    }
 
     imgui_new_frame();
 
@@ -976,42 +914,42 @@ void imgui_update()
     ImGui::End();
 
     ImGui::Begin("Selection", &show_selection);
-    if (selected_inst)
+    if (num_selected_instances > 0)
     {
-        ImGui::SliderFloat3("Translation", selected_inst->translation, -20.f, 20.f);
+        ImGui::SliderFloat3("Translation", translation, -20.f, 20.f);
         ImGui::SameLine();
         if (ImGui::Button("Reset translation"))
         {
-            selected_inst->translation[0] = 0.f;
-            selected_inst->translation[1] = 0.f;
-            selected_inst->translation[2] = 0.f;
+            translation[0] = 0.f;
+            translation[1] = 0.f;
+            translation[2] = 0.f;
         }
-        ImGui::SliderFloat("Right angle", &selected_inst->right_angle, 0, 360);
+        ImGui::SliderFloat("Right angle", &right_angle, 0, 360);
         ImGui::SameLine();
         if (ImGui::Button("Reset right angle"))
         {
-            selected_inst->right_angle = 0.f;
+            right_angle = 0.f;
         }
-        ImGui::SliderFloat("Up angle", &selected_inst->up_angle, 0, 360);
+        ImGui::SliderFloat("Up angle", &up_angle, 0, 360);
         ImGui::SameLine();
         if (ImGui::Button("Reset up angle"))
         {
-            selected_inst->up_angle = 0.f;
+            up_angle = 0.f;
         }
-        ImGui::SliderFloat("Forward angle", &selected_inst->forward_angle, 0, 360);
+        ImGui::SliderFloat("Forward angle", &forward_angle, 0, 360);
         ImGui::SameLine();
         if (ImGui::Button("Reset forward angle"))
         {
-            selected_inst->forward_angle = 0.f;
+            forward_angle = 0.f;
         }
 
-        ImGui::DragFloat3("Scale", selected_inst->scale, 0.01f, -20.f, 20.f);
+        ImGui::DragFloat3("Scale", scale, 0.01f, -20.f, 20.f);
         ImGui::SameLine();
         if (ImGui::Button("Reset scale"))
         {
-            selected_inst->scale[0] = 1.f;
-            selected_inst->scale[1] = 1.f;
-            selected_inst->scale[2] = 1.f;
+            scale[0] = 1.f;
+            scale[1] = 1.f;
+            scale[2] = 1.f;
         }
     }
 
@@ -1069,6 +1007,7 @@ extern "C" __declspec(dllexport) bool update_and_render()
     // update instance data
     num_selected_instances = 0;
     frame->sb_selected_instanceIDs_upload->clear_data();
+
     for (size_t i = 0; i < total_ri_instances.size(); i++)
     {
         frame->sb_instanceIDs_upload->copy_data((int)i, (void *)&i);
@@ -1083,31 +1022,32 @@ extern "C" __declspec(dllexport) bool update_and_render()
         instance_data inst_shader_data;
         XMStoreFloat4x4(&inst_shader_data.world, XMMatrixTranspose(inst_world));
 
-        if (inst->is_selected)
+        XMVECTOR right = XMVectorSet(1.f, 0.f, 0.f, 0.f);
+        XMVECTOR right_rot_quat = XMQuaternionRotationAxis(right, XMConvertToRadians(inst->right_angle));
+
+        XMVECTOR up = XMVectorSet(0.f, 1.f, 0.f, 0.f);
+        XMVECTOR up_rot_quat = XMQuaternionRotationAxis(up, XMConvertToRadians(inst->up_angle));
+
+        XMVECTOR forward = XMVectorSet(0.f, 0.f, 1.f, 0.f);
+        XMVECTOR forward_rot_quat = XMQuaternionRotationAxis(forward, XMConvertToRadians(inst->forward_angle));
+
+        XMVECTOR rot_quat = XMQuaternionMultiply(forward_rot_quat, XMQuaternionMultiply(right_rot_quat, up_rot_quat));
+        XMMATRIX rot_mat = XMMatrixRotationQuaternion(rot_quat);
+
+        XMMATRIX scale_mat = XMMatrixScaling(scale[0], scale[1], scale[2]);
+        XMMATRIX translation_mat = XMMatrixTranslation(inst->translation[0], inst->translation[1], inst->translation[2]);
+        XMMATRIX srt = scale_mat * rot_mat * translation_mat;
+
+        if (num_selected_instances > 0)
         {
-            selected_inst = inst;
-            XMVECTOR right = XMVectorSet(1.f, 0.f, 0.f, 0.f);
-            XMVECTOR right_rot_quat = XMQuaternionRotationAxis(right, XMConvertToRadians(selected_inst->right_angle));
-
-            XMVECTOR up = XMVectorSet(0.f, 1.f, 0.f, 0.f);
-            XMVECTOR up_rot_quat = XMQuaternionRotationAxis(up, XMConvertToRadians(selected_inst->up_angle));
-
-            XMVECTOR forward = XMVectorSet(0.f, 0.f, 1.f, 0.f);
-            XMVECTOR forward_rot_quat = XMQuaternionRotationAxis(forward, XMConvertToRadians(selected_inst->forward_angle));
-
-            XMVECTOR rot_quat = XMQuaternionMultiply(forward_rot_quat, XMQuaternionMultiply(right_rot_quat, up_rot_quat));
-            XMMATRIX rot_mat = XMMatrixRotationQuaternion(rot_quat);
-
-            XMMATRIX scale_mat = XMMatrixScaling(selected_inst->scale[0], selected_inst->scale[1], selected_inst->scale[2]);
-            XMMATRIX translation_mat = XMMatrixTranslation(selected_inst->translation[0], selected_inst->translation[1], selected_inst->translation[2]);
-            XMMATRIX srt = scale_mat * rot_mat * translation_mat;
-
-            XMMATRIX new_world = XMMatrixIdentity();
-            new_world = new_world * srt;
-
-            XMStoreFloat4x4(&selected_inst->shader_data.world, new_world);
-            XMStoreFloat4x4(&inst_shader_data.world, XMMatrixTranspose(inst_world));
         }
+
+        XMMATRIX new_world = XMMatrixIdentity();
+        new_world = new_world * srt;
+
+        XMStoreFloat4x4(&inst->shader_data.world, new_world);
+        XMStoreFloat4x4(&inst_shader_data.world, XMMatrixTranspose(inst_world));
+
         frame->sb_instancedata_upload->copy_data((int)i, (void *)&inst_shader_data);
     }
 
@@ -1143,11 +1083,10 @@ extern "C" __declspec(dllexport) bool update_and_render()
     cmdlist->SetGraphicsRootSignature(dr->rootsig);
     cmdlist->SetGraphicsRootConstantBufferView(0, frame->cb_passdata_upload->m_uploadbuffer->GetGPUVirtualAddress());
     draw_render_items(cmdlist, &render_items);
-    draw_debug_lines(cmdlist, &debug_lines);
 
-    query->start_query("ui_rendering");
+    query->start("ui_rendering");
     imgui_render(cmdlist);
-    query->end_query("ui_rendering");
+    query->stop("ui_rendering");
 
     cmdlist->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
                                     dr->main_rt_resources[backbuffer_index],
@@ -1164,48 +1103,6 @@ extern "C" __declspec(dllexport) bool update_and_render()
     imgui_gpu_time = query->result("ui_rendering");
 
     return true;
-}
-
-void update_orbit(float x, float y)
-{
-    XMVECTOR start_cam_pos = cam.position;
-
-    XMStoreFloat3(&orbit_line.start.position, start_cam_pos);
-    XMStoreFloat3(&orbit_line.end.position, orbit_target_pos);
-    XMStoreFloat4(&orbit_line.start.color, DirectX::Colors::Red.v);
-    XMStoreFloat4(&orbit_line.end.color, DirectX::Colors::GreenYellow.v);
-
-    // Get the direction vector from the camera position to the target position (position - point = direction)
-    XMVECTOR cam_to_target_dir = orbit_target_pos - cam.position;
-
-    // Translate to target position (direction + point = point)
-    cam.position = cam_to_target_dir + cam.position;
-
-    // Rotate the camera forward direction around the camera up vector.
-    camera_up = XMVectorSet(0.f, 1.f, 0.f, 0.f);
-    XMVECTOR up_rot_quat = XMQuaternionRotationAxis(camera_up, x);
-    XMMATRIX up_rot_mat = XMMatrixRotationQuaternion(up_rot_quat);
-    XMVECTOR rot_cam_dir = XMVector3Normalize(XMVector3Transform(camera_forward, up_rot_mat));
-
-    // Rotate the right vector to reorient the viewer
-    camera_right = XMVector3TransformNormal(camera_right, up_rot_mat);
-
-    // Rotate the camera forward direction around the camera right vector.
-    XMVECTOR right_rot_quat = XMQuaternionRotationAxis(camera_right, y);
-    XMMATRIX right_rot_mat = XMMatrixRotationQuaternion(right_rot_quat);
-    rot_cam_dir = XMVector3TransformNormal(rot_cam_dir, right_rot_mat);
-    camera_up = XMVector3TransformNormal(camera_up, right_rot_mat);
-
-    // get the distance from the camera position to the object it orbits
-    XMVECTOR cam_to_target = XMVectorSubtract(orbit_target_pos, start_cam_pos);
-    float dist_to_target = XMVectorGetX(XMVector3Length(cam_to_target));
-
-    // Place the camera back
-    rot_cam_dir = XMVectorScale(rot_cam_dir, -dist_to_target);
-    cam.position = XMVectorAdd(cam.position, rot_cam_dir);
-
-    //look at the thing we're orbiting around
-    camera_forward = XMVector4Normalize(XMVectorSubtract(orbit_target_pos, cam.position));
 }
 
 void pick(const DirectX::XMMATRIX &to_projection, const DirectX::XMMATRIX &to_view, const float ndc_x, const float ndc_y)
@@ -1237,6 +1134,18 @@ void pick(const DirectX::XMMATRIX &to_projection, const DirectX::XMMATRIX &to_vi
             float dist = 0.f;
             if (inst.bounds.Intersects(ray_origin, ray_dir, dist))
             {
+                if (!ImGui::GetIO().KeyCtrl)
+                {
+                    for (render_item &ri : render_items)
+                    {
+                        ri.is_selected = false;
+                        for (instance &inst : ri.instances)
+                        {
+                            inst.is_selected = false;
+                        }
+                    }
+                }
+                inst.is_selected = true;
                 ri.is_selected = true;
             }
         }
@@ -1247,99 +1156,26 @@ extern "C" __declspec(dllexport) void wndproc(UINT msg, WPARAM wParam, LPARAM lP
 {
     imgui_wndproc(msg, wParam, lParam);
 
-    if (!GetAsyncKeyState(VK_MENU))
-    {
-        is_orbiting = false;
-    }
-
     switch (msg)
     {
     case WM_MOUSEMOVE:
-        if (!ImGui::IsAnyWindowHovered() && !ImGui::IsAnyItemHovered() && !ImGui::IsAnyItemFocused() && !ImGui::IsAnyWindowFocused())
+        if (!is_hovering_window())
         {
             if (ImGui::IsMouseDown(ImGuiMouseButton_Left))
             {
-                float x = ImGui::GetMousePos().x;
-                float y = ImGui::GetMousePos().y;
-
-                float dx = XMConvertToRadians(0.5f * (x - last_mouse_pos.x));
-                float dy = XMConvertToRadians(0.5f * (y - last_mouse_pos.y));
-
-                if (GetAsyncKeyState(VK_MENU))
-                {
-                    is_orbiting = true;
-
-                    XMVECTOR start_cam_pos = cam.position;
-
-                    XMStoreFloat3(&orbit_line.start.position, start_cam_pos);
-                    XMStoreFloat3(&orbit_line.end.position, orbit_target_pos);
-                    XMStoreFloat4(&orbit_line.start.color, DirectX::Colors::Red.v);
-                    XMStoreFloat4(&orbit_line.end.color, DirectX::Colors::GreenYellow.v);
-
-                    // Get the direction vector from the camera position to the target position (position - point = direction)
-                    XMVECTOR cam_to_target_dir = orbit_target_pos - cam.position;
-
-                    // Translate to target position (direction + point = point)
-                    cam.position = cam_to_target_dir + cam.position;
-
-                    XMMATRIX to_yaw = XMMatrixRotationY(dx);
-                    XMMATRIX to_pitch = XMMatrixRotationAxis(camera_right, dy);
-                    XMMATRIX to_rot = to_pitch * to_yaw; // apply global yaw to local pitch
-
-                    XMVECTOR rot_cam_forward;
-                    rot_cam_forward = XMVector3Transform(camera_forward, to_rot);
-                    camera_right = XMVector3Transform(camera_right, to_rot);
-                    camera_up = XMVector3Transform(camera_up, to_rot);
-
-                    rot_cam_forward = XMVector3Normalize(rot_cam_forward);
-
-                    // get the distance from the camera position to the object it orbits
-                    XMVECTOR cam_to_target = XMVectorSubtract(orbit_target_pos, start_cam_pos);
-                    float dist_to_target = XMVectorGetX(XMVector3Length(cam_to_target));
-
-                    // Place the camera back
-                    rot_cam_forward = XMVectorScale(rot_cam_forward, -dist_to_target);
-                    cam.position = XMVectorAdd(cam.position, rot_cam_forward);
-
-                    //look at the thing we're orbiting around
-                    camera_forward = XMVector4Normalize(XMVectorSubtract(orbit_target_pos, cam.position));
-                }
-                else
-                {
-                    XMMATRIX yaw = XMMatrixRotationY(dx);
-                    camera_forward = XMVector3TransformNormal(camera_forward, yaw);
-                    camera_right = XMVector3TransformNormal(camera_right, yaw);
-                    camera_up = XMVector3TransformNormal(camera_up, yaw);
-
-                    XMMATRIX pitch = XMMatrixRotationAxis(camera_right, dy);
-                    camera_forward = XMVector3TransformNormal(camera_forward, pitch);
-                    camera_up = XMVector3TransformNormal(camera_up, pitch);
-                }
-            }
-            if (ImGui::IsMouseDown(ImGuiMouseButton_Right))
-            {
-                // Make each pixel correspond to 0.005 unit in the scene.
-                float dx = 0.005f * static_cast<float>(ImGui::GetMousePos().x - last_mouse_pos.x);
-                float dy = 0.005f * static_cast<float>(ImGui::GetMousePos().y - last_mouse_pos.y);
-
-                // Update the camera radius based on input.
-                radius += dx - dy;
-
-                // Restrict the radius.
-                radius = std::clamp(radius, 3.0f, 200.0f);
+                cam.update_yaw_pitch(XMFLOAT2(ImGui::GetMousePos().x, ImGui::GetMousePos().y),
+                                     XMFLOAT2(last_mouse_pos.x, last_mouse_pos.y));
             }
         }
         last_mouse_pos.x = ImGui::GetMousePos().x;
         last_mouse_pos.y = ImGui::GetMousePos().y;
         break;
 
-    case WM_RBUTTONDOWN:
-        last_mouse_pos.x = ImGui::GetMousePos().x;
-        last_mouse_pos.y = ImGui::GetMousePos().y;
-        break;
-
     case WM_LBUTTONDOWN:
-        pick(XMMatrixTranspose(XMLoadFloat4x4(&pass.proj)), XMMatrixTranspose(XMLoadFloat4x4(&pass.view)), ndc_mouse_pos.x, ndc_mouse_pos.y);
+        if (!is_hovering_window())
+        {
+            pick(XMMatrixTranspose(XMLoadFloat4x4(&pass.proj)), XMMatrixTranspose(XMLoadFloat4x4(&pass.view)), ndc_mouse_pos.x, ndc_mouse_pos.y);
+        }
         break;
 
     default:
@@ -1360,7 +1196,6 @@ extern "C" __declspec(dllexport) void cleanup()
     dr->flush_cmd_queue();
 
     safe_release(flat_color_pso);
-    safe_release(line_pso);
     safe_release(wireframe_pso);
     safe_release(outline_pso);
     safe_release(stencil_pso);
@@ -1384,14 +1219,13 @@ extern "C" __declspec(dllexport) void cleanup()
 
     delete dr;
     delete query;
-    delete debug_lines_upload;
 
 #ifdef DX12_ENABLE_DEBUG_LAYER
     IDXGIDebug1 *debug = NULL;
     if (SUCCEEDED(DXGIGetDebugInterface1(0, IID_PPV_ARGS(&debug))))
     {
         debug->ReportLiveObjects(DXGI_DEBUG_ALL, DXGI_DEBUG_RLO_DETAIL);
-        debug->Release();
+        safe_release(debug);
     }
 #endif
 }
