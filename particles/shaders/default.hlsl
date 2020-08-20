@@ -20,6 +20,13 @@ struct vertex_out
     float4 color : COLOR;
 };
 
+struct geo_out
+{
+    float4 hpos : SV_Position;
+    float4 color : COLOR;
+    float2 tex_coord : TEXCOORD;
+};
+
 struct pixel_out
 {
     float4 color : SV_Target;
@@ -35,10 +42,13 @@ vertex_out VS(vertex_in vs_in)
     return ps_in;
 }
 
+geo_out GS(vertex_out gs_in)
+{
+}
+
 pixel_out PS(vertex_out ps_in)
 {
     pixel_out ps_out;
     ps_out.color = float4(1.f, 0.f, 0.f, 1.f);
-    //ps_out.color = ps_in.color;
     return ps_out;
 }

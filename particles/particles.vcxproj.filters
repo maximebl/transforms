@@ -27,6 +27,12 @@
     <ClInclude Include="mcallister_system.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="..\PerformanceAPI.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\PerformanceAPI_capi.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp">

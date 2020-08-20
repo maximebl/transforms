@@ -193,23 +193,26 @@ extern "C" __declspec(dllexport) bool initialize()
     input_elem_descs.push_back({"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
     input_elem_descs.push_back({"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
 
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC default_pso_desc = dr->create_default_pso_desc(&input_elem_descs, perspective_blob_vs, perspective_blob_ps);
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC default_pso_desc = dr->create_default_pso_desc(&input_elem_descs);
+    default_pso_desc.VS = {perspective_blob_vs->GetBufferPointer(), perspective_blob_vs->GetBufferSize()};
+    default_pso_desc.PS = {perspective_blob_ps->GetBufferPointer(), perspective_blob_ps->GetBufferSize()};
     default_pso_desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     hr = device->CreateGraphicsPipelineState(&default_pso_desc, IID_PPV_ARGS(&flat_color_pso));
     ASSERT(SUCCEEDED(hr));
 
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC wireframe_pso_desc = dr->create_default_pso_desc(&input_elem_descs, perspective_blob_vs, perspective_blob_ps);
-    wireframe_pso_desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC wireframe_pso_desc = default_pso_desc;
     wireframe_pso_desc.RasterizerState.FillMode = D3D12_FILL_MODE_WIREFRAME;
     hr = device->CreateGraphicsPipelineState(&wireframe_pso_desc, IID_PPV_ARGS(&wireframe_pso));
     ASSERT(SUCCEEDED(hr));
 
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC stencil_pso_desc = dr->create_default_pso_desc(&input_elem_descs, perspective_blob_vs, perspective_blob_ps);
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC stencil_pso_desc = default_pso_desc;
     stencil_pso_desc.DepthStencilState = create_stencil_dss();
     hr = device->CreateGraphicsPipelineState(&stencil_pso_desc, IID_PPV_ARGS(&stencil_pso));
     ASSERT(SUCCEEDED(hr));
 
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC outline_pso_desc = dr->create_default_pso_desc(&input_elem_descs, outline_blob_vs, outline_blob_ps);
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC outline_pso_desc = default_pso_desc;
+    outline_pso_desc.VS = {outline_blob_vs->GetBufferPointer(), outline_blob_vs->GetBufferSize()};
+    outline_pso_desc.PS = {outline_blob_ps->GetBufferPointer(), outline_blob_ps->GetBufferSize()};
     outline_pso_desc.DepthStencilState = create_outline_dss();
     hr = device->CreateGraphicsPipelineState(&outline_pso_desc, IID_PPV_ARGS(&outline_pso));
     ASSERT(SUCCEEDED(hr));

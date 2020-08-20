@@ -69,6 +69,14 @@ struct constant
     void emit(float &v);
 };
 
+struct random
+{
+    float m_first;
+    float m_second;
+    random(float first, float second);
+    void emit(float &v);
+};
+
 // Initializers
 template <typename domain>
 struct position : initializer
@@ -124,19 +132,19 @@ struct mcallister_system
 {
     mcallister_system(source *src, std::vector<action *> actions, ID3D12Device *device);
     ~mcallister_system();
+    void reset(particle ptr);
     std::pair<particle, particle> simulate(float dt, particle current_particle);
     BYTE *get_frame_partition(int frame_index);
     upload_buffer *m_vertex_upload_resource = nullptr;
     size_t m_vertexbuffer_stride = 0;
     size_t m_num_particles_total = 0;
     size_t m_num_particles_alive = 0;
-    static constexpr int m_max_particles = 1000;
+    static constexpr int m_max_particles_per_frame = 1000;
 
 private:
     std::vector<std::unique_ptr<action>> m_actions = {};
     particle m_particle = nullptr;
     std::unique_ptr<source> m_source = nullptr;
-    particle m_current_particle = nullptr;
     particle m_previous_particle = nullptr;
 };
 

@@ -2,6 +2,7 @@
 #include "mcallister_system.h"
 #include <algorithm>
 #include <random>
+#include "../PerformanceAPI_capi.h"
 
 namespace particle
 {
@@ -16,12 +17,10 @@ mcallister_system::mcallister_system(source *src, std::vector<action *> actions,
 
     // allocate sizeof AOS (32 bytes) * number of particles (1000) =  32000 bytes
     // Multiplies 32000 by the frame_count inside the function to reach 128000 bytes total
-    m_vertexbuffer_stride = m_max_particles * size;
-    m_num_particles_total = m_max_particles * NUM_BACK_BUFFERS;
+    m_vertexbuffer_stride = m_max_particles_per_frame * size;
+    m_num_particles_total = m_max_particles_per_frame * NUM_BACK_BUFFERS;
 
     m_vertex_upload_resource = new upload_buffer(device, m_num_particles_total, size, "particles_vertices");
-    m_current_particle = (particle)m_vertex_upload_resource->m_mapped_data;
-    m_previous_particle = m_current_particle;
 }
 
 mcallister_system::~mcallister_system()
@@ -29,29 +28,46 @@ mcallister_system::~mcallister_system()
     delete m_vertex_upload_resource;
 }
 
-std::pair<particle, particle> mcallister_system::simulate(float dt, particle current_particle)
+void mcallister_system::reset(particle ptr)
 {
-    m_current_particle = current_particle;
-    particle begin = m_current_particle;
-    particle iter = m_current_particle + m_num_particles_alive;
-    particle end = m_current_particle + m_max_particles;
+    ptr->age = 0.f;
+    ptr->color = XMCOLOR(0.f, 0.f, 0.f, 0.f);
+    ptr->position = XMFLOAT3(0.f, 0.f, 0.f);
+    ptr->velocity = XMFLOAT3(0.f, 0.f, 0.f);
+    m_num_particles_alive = 0;
+}
 
-    // Run actions
+std::pair<particle, particle> mcallister_system::simulate(float dt, particle current_partition)
+{
+    PerformanceAPI_BeginEvent("simulation", nullptr, PERFORMANCEAPI_DEFAULT_COLOR);
+
+    particle partition_start = current_partition;
+    particle partition_ptr = current_partition + m_num_particles_alive;
+    particle partition_end = current_partition + m_max_particles_per_frame;
+
     for (size_t i = 0; i < m_num_particles_alive; i++)
     {
-        begin[i] = m_previous_particle[i];
+        partition_start[i] = m_previous_particle[i];
+
+        // Run actions
         for (auto &act : m_actions)
         {
-            act.get()->apply(dt, begin + i);
+            act.get()->apply(dt, partition_start + i);
         }
     }
 
-    iter = m_source->apply(dt, iter, end);
+    // Spawn new particles
+    partition_ptr = m_source->apply(dt, partition_ptr, partition_end);
 
-    m_num_particles_alive = iter - begin;
-    m_previous_particle = m_current_particle;
+    m_num_particles_alive = partition_ptr - partition_start;
+    m_previous_particle = current_partition;
 
-    return std::make_pair(begin, iter);
+    // parition the pool, reconcile the emitted with the timed-out
+    partition_ptr = std::partition(partition_start, partition_ptr, [](auto &v) { return v.age <= 5; });
+
+    PerformanceAPI_EndEvent();
+
+    return std::make_pair(partition_start, partition_ptr);
 }
 
 BYTE *mcallister_system::get_frame_partition(int frame_index)
@@ -77,26 +93,27 @@ particle flow::apply(float dt, particle begin, particle end)
 {
     m_time += dt;
     // Calculate the number of particles we should have at this time
-    size_t num_created = size_t(m_particles_per_second * m_time);
+    size_t num_particles_to_create = size_t(m_particles_per_second * m_time);
 
-    bool should_spawn_particles = num_created > m_num_created;
+    bool should_spawn_particles = num_particles_to_create > m_num_created;
     if (should_spawn_particles)
     {
         // Calculate how many particles can be created
-        num_created = std::min(num_created - m_num_created, size_t(end - begin));
+        size_t remaining_particle_slots = size_t(end - begin);
+        num_particles_to_create = std::min(num_particles_to_create - m_num_created, remaining_particle_slots);
 
         // Initialize the new particles
-        for (size_t i = 0; i < num_created; ++i)
+        for (size_t i = 0; i < num_particles_to_create; ++i)
         {
             for (auto &initializer : m_initializers)
             {
                 initializer->apply(dt, begin + i);
             }
         }
-        m_num_created += num_created;
+        m_num_created += num_particles_to_create;
 
         // Return the end of the created particles
-        return begin + num_created;
+        return begin + num_particles_to_create;
     }
     else
     {
@@ -123,6 +140,20 @@ constant::constant(float v)
 void constant::emit(float &v)
 {
     v = m_constant;
+}
+
+random::random(float first, float second)
+{
+    m_first = first;
+    m_second = second;
+}
+
+void random::emit(float &v)
+{
+    std::random_device rd;                                     // obtain a random number from hardware
+    std::mt19937 gen(rd());                                    // seed the generator
+    std::uniform_real_distribution<> distr(m_first, m_second); // define the range
+    v = (float)distr(gen);
 }
 
 cylinder::cylinder(XMVECTOR const &pt1, XMVECTOR const &pt2, float rd1, float rd2)
@@ -179,7 +210,6 @@ void move::apply(float dt, particle particle)
     XMVECTOR vel = XMLoadFloat3(&particle->velocity);
     pos = XMVectorMultiplyAdd(vel, vdt, pos);
     particle->age += dt;
-
     XMStoreFloat3(&particle->position, pos);
 }
 

@@ -245,14 +245,13 @@ void device_resources::create_dsv(UINT64 width, UINT height)
         dsv_heap->GetCPUDescriptorHandleForHeapStart());
 }
 
-D3D12_GRAPHICS_PIPELINE_STATE_DESC device_resources::create_default_pso_desc(std::vector<D3D12_INPUT_ELEMENT_DESC> *input_layouts, ID3DBlob *vs, ID3DBlob *ps)
+D3D12_GRAPHICS_PIPELINE_STATE_DESC device_resources::create_default_pso_desc(std::vector<D3D12_INPUT_ELEMENT_DESC> *input_layouts)
 {
     D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {};
     desc.NodeMask = DEFAULT_NODE;
     desc.pRootSignature = rootsig;
     desc.InputLayout = {input_layouts->data(), (UINT)input_layouts->size()};
     desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    desc.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
 
     desc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC1(D3D12_DEFAULT);
     desc.DSVFormat = dsv_format;
@@ -264,7 +263,6 @@ D3D12_GRAPHICS_PIPELINE_STATE_DESC device_resources::create_default_pso_desc(std
     desc.SampleMask = UINT_MAX;
     desc.SampleDesc.Count = 1;
     desc.SampleDesc.Quality = 0;
-    desc.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
     return desc;
 }
 

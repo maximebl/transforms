@@ -121,10 +121,9 @@ public:
     void create_rootsig(std::vector<CD3DX12_ROOT_PARAMETER1> *params, const wchar_t *name);
     void create_rendertargets();
     void create_dsv(UINT64 width, UINT height);
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC create_default_pso_desc(std::vector<D3D12_INPUT_ELEMENT_DESC> *input_layouts, ID3DBlob *vs, ID3DBlob *ps);
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC create_default_pso_desc(std::vector<D3D12_INPUT_ELEMENT_DESC> *input_layouts);
     void resize_swapchain(int width, int height);
     void cleanup_rendertargets();
-    void set_viewport_rects(ID3D12GraphicsCommandList *cmd_list);
     void cpu_wait(UINT64 fence_value);
     void cpu_wait_for_present_and_fence(UINT64 fence_value);
     void flush_cmd_queue();

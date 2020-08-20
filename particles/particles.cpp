@@ -35,6 +35,7 @@ s_internal ID3D12CommandAllocator *cmd_alloc = nullptr;
 bool create_shader_objects();
 s_internal ID3DBlob *particle_blob_vs = nullptr;
 s_internal ID3DBlob *particle_blob_ps = nullptr;
+s_internal ID3DBlob *particle_blob_gs = nullptr;
 s_internal ID3D12PipelineState *flat_color_pso = nullptr;
 
 // Queries data
@@ -47,6 +48,7 @@ s_internal std::string cpu_rest_of_frame = "cpu_rest_of_frame";
 s_internal std::string cpu_particle_sim = "cpu_particle_sim";
 
 // Particles data
+s_internal bool should_reset = false;
 s_internal particle::mcallister_system *particle_system = nullptr;
 
 // Camera
@@ -87,6 +89,7 @@ extern "C" __declspec(dllexport) bool initialize()
         new particle::flow(50,
                            {new particle::position<particle::point>(XMFLOAT3(0.0f, 0.0f, 0.15f)),
                             new particle::age<particle::constant>(0.f),
+                            //new particle::age<particle::random>({0.f, 5.f}),
                             new particle::velocity<particle::cylinder>({XMVectorSet(0.f, 0.f, 0.85f, 0.f),
                                                                         XMVectorSet(0.f, 0.f, 1.97f, 0.f),
                                                                         0.21f, 0.19f})}),
@@ -133,12 +136,21 @@ extern "C" __declspec(dllexport) bool update_and_render()
     XMStoreFloat4x4(&cb_pass.view, cam.view);
     XMStoreFloat4x4(&cb_pass.proj, XMMatrixTranspose(cam.proj));
 
-    particle::particle current_particle_vb_range = reinterpret_cast<particle::particle>(frame->particle_vb_range);
+    if (should_reset)
+    {
+        for (size_t i = 0; i < _countof(frame_resources); i++)
+        {
+            particle_system->reset(reinterpret_cast<particle::particle>(frame_resources[i]->particle_vb_range));
+        }
+        should_reset = false;
+    }
+
+    particle::particle current_particle = reinterpret_cast<particle::particle>(frame->particle_vb_range);
 
     timer.start(cpu_particle_sim);
     auto [current_particle_start, current_particle_end] = particle_system->simulate(
         (float)dt,
-        current_particle_vb_range);
+        current_particle);
     timer.stop(cpu_particle_sim);
 
     timer.start(cpu_wait_time);
@@ -179,48 +191,52 @@ extern "C" __declspec(dllexport) bool update_and_render()
 
     main_cmdlist->OMSetRenderTargets(1, &dr->rtv_descriptors[backbuffer_index], FALSE, &dr->dsv_heap->GetCPUDescriptorHandleForHeapStart());
 
-    // Configure VBVs from particle pointers
-    size_t particle_gpu_data_start = particle_system->m_vertex_upload_resource->m_uploadbuffer->GetGPUVirtualAddress();
-    UINT particle_vb_size = (UINT)particle_system->m_vertexbuffer_stride;
-    UINT particle_vb_stride = (UINT)particle::size;
-    BYTE *particle_cpu_data_start = particle_system->m_vertex_upload_resource->m_mapped_data;
+    UINT num_vertices = UINT(current_particle_end - current_particle_start);
+    if (num_vertices > 0)
+    {
+        // Configure VBVs from particle pointers
+        size_t particle_gpu_data_start = particle_system->m_vertex_upload_resource->m_uploadbuffer->GetGPUVirtualAddress();
+        UINT particle_vb_size = (UINT)particle_system->m_vertexbuffer_stride;
+        UINT particle_vb_stride = (UINT)particle::size;
+        BYTE *particle_cpu_data_start = particle_system->m_vertex_upload_resource->m_mapped_data;
 
-    D3D12_VERTEX_BUFFER_VIEW vbv[4] = {};
+        D3D12_VERTEX_BUFFER_VIEW vbv[4] = {};
 
-    // Position data
-    size_t position_offset = (BYTE *)&current_particle_start->position - particle_cpu_data_start;
+        // Position data
+        size_t position_offset = (BYTE *)&current_particle_start->position - particle_cpu_data_start;
 
-    vbv[0].BufferLocation = particle_gpu_data_start + position_offset;
-    vbv[0].SizeInBytes = particle_vb_size - offsetof(particle::aligned_particle_aos, position);
-    vbv[0].StrideInBytes = particle_vb_stride;
+        vbv[0].BufferLocation = particle_gpu_data_start + position_offset;
+        vbv[0].SizeInBytes = particle_vb_size - offsetof(particle::aligned_particle_aos, position);
+        vbv[0].StrideInBytes = particle_vb_stride;
 
-    // Color data
-    size_t color_offset = (BYTE *)&current_particle_start->color - particle_cpu_data_start;
+        // Color data
+        size_t color_offset = (BYTE *)&current_particle_start->color - particle_cpu_data_start;
 
-    vbv[1].BufferLocation = particle_gpu_data_start + color_offset;
-    vbv[1].SizeInBytes = particle_vb_size - offsetof(particle::aligned_particle_aos, color);
-    vbv[1].StrideInBytes = particle_vb_stride;
+        vbv[1].BufferLocation = particle_gpu_data_start + color_offset;
+        vbv[1].SizeInBytes = particle_vb_size - offsetof(particle::aligned_particle_aos, color);
+        vbv[1].StrideInBytes = particle_vb_stride;
 
-    // Velocity data
-    size_t velocity_offset = (BYTE *)&current_particle_start->velocity - particle_cpu_data_start;
+        // Velocity data
+        size_t velocity_offset = (BYTE *)&current_particle_start->velocity - particle_cpu_data_start;
 
-    vbv[2].BufferLocation = particle_gpu_data_start + velocity_offset;
-    vbv[2].SizeInBytes = particle_vb_size - offsetof(particle::aligned_particle_aos, velocity);
-    vbv[2].StrideInBytes = particle_vb_stride;
+        vbv[2].BufferLocation = particle_gpu_data_start + velocity_offset;
+        vbv[2].SizeInBytes = particle_vb_size - offsetof(particle::aligned_particle_aos, velocity);
+        vbv[2].StrideInBytes = particle_vb_stride;
 
-    // Age data
-    size_t age_offset = (BYTE *)&current_particle_start->age - particle_cpu_data_start;
+        // Age data
+        size_t age_offset = (BYTE *)&current_particle_start->age - particle_cpu_data_start;
 
-    vbv[3].BufferLocation = particle_gpu_data_start + age_offset;
-    vbv[3].SizeInBytes = particle_vb_size - offsetof(particle::aligned_particle_aos, age);
-    vbv[3].StrideInBytes = particle_vb_stride;
+        vbv[3].BufferLocation = particle_gpu_data_start + age_offset;
+        vbv[3].SizeInBytes = particle_vb_size - offsetof(particle::aligned_particle_aos, age);
+        vbv[3].StrideInBytes = particle_vb_stride;
 
-    // Draw particles
-    main_cmdlist->SetGraphicsRootSignature(dr->rootsig);
-    main_cmdlist->SetGraphicsRootConstantBufferView(0, frame->cb_passdata_upload->m_uploadbuffer->GetGPUVirtualAddress());
-    main_cmdlist->IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_POINTLIST);
-    main_cmdlist->IASetVertexBuffers(0, _countof(vbv), vbv);
-    main_cmdlist->DrawInstanced(UINT(current_particle_end - current_particle_start), 1, 0, 0);
+        // Draw particles
+        main_cmdlist->SetGraphicsRootSignature(dr->rootsig);
+        main_cmdlist->SetGraphicsRootConstantBufferView(0, frame->cb_passdata_upload->m_uploadbuffer->GetGPUVirtualAddress());
+        main_cmdlist->IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_POINTLIST);
+        main_cmdlist->IASetVertexBuffers(0, _countof(vbv), vbv);
+        main_cmdlist->DrawInstanced(num_vertices, 1, 0, 0);
+    }
 
     // UI rendering
     PIXBeginEvent(main_cmdlist, 0, gpu_imgui_time_query.c_str());
@@ -271,9 +287,13 @@ void imgui_update()
 
     ImGui::Separator();
 
-    ImGui::Text("Particles alive: %d", particle_system->m_num_particles_alive);
+    ImGui::Text("Particles alive: %d / %d", particle_system->m_num_particles_alive, particle_system->m_max_particles_per_frame);
     ImGui::Text("Particles total: %d", particle_system->m_num_particles_total);
-    ImGui::Text("Particles maximum: %d", particle_system->m_max_particles);
+
+    if (ImGui::Button("Reset particle system"))
+    {
+        should_reset = true;
+    }
 }
 
 void update_camera()
@@ -313,6 +333,8 @@ bool create_shader_objects()
         return false;
     if (!compile_shader(L"..\\..\\particles\\shaders\\default.hlsl", L"PS", shader_type::pixel, &particle_blob_ps))
         return false;
+    if (!compile_shader(L"..\\..\\particles\\shaders\\default.hlsl", L"GS", shader_type::geometry, &particle_blob_gs))
+        return false;
 
     std::vector<CD3DX12_ROOT_PARAMETER1> params;
     // (root) ConstantBuffer<view_proj> cb_viewproj : register(b0);
@@ -328,7 +350,10 @@ bool create_shader_objects()
     input_elem_descs.push_back({"VELOCITY", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
     input_elem_descs.push_back({"AGE", 0, DXGI_FORMAT_R32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
 
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC default_pso_desc = dr->create_default_pso_desc(&input_elem_descs, particle_blob_vs, particle_blob_ps);
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC default_pso_desc = dr->create_default_pso_desc(&input_elem_descs);
+    default_pso_desc.VS = {particle_blob_vs->GetBufferPointer(), particle_blob_vs->GetBufferSize()};
+    default_pso_desc.PS = {particle_blob_ps->GetBufferPointer(), particle_blob_ps->GetBufferSize()};
+    default_pso_desc.GS = {particle_blob_gs->GetBufferPointer(), particle_blob_gs->GetBufferSize()};
     default_pso_desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     default_pso_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
     hr = device->CreateGraphicsPipelineState(&default_pso_desc, IID_PPV_ARGS(&flat_color_pso));
