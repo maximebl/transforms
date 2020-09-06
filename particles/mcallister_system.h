@@ -16,15 +16,15 @@ s_internal constexpr int half_cache_line = XM_CACHE_LINE_SIZE / 2;
 struct alignas(half_cache_line) aligned_particle_aos
 {
     XMFLOAT3 position; // 12 bytes
-    XMCOLOR color;     // 4 bytes -- 16 bytes alignment
+    float size;        // 4 bytes -- 16 bytes alignment
     XMFLOAT3 velocity; // 12 bytes
     float age;         // 4 bytes -- 16 bytes alignment
 };
 
-s_internal constexpr size_t size = sizeof(aligned_particle_aos);
+s_internal constexpr size_t byte_size = sizeof(aligned_particle_aos);
 
 static_assert(std::alignment_of<aligned_particle_aos>::value == half_cache_line, "aligned_particle_aos must be 32 bytes aligned.");
-static_assert(size == half_cache_line, "aligned_particle_aos must be 32 bytes wide.");
+static_assert(byte_size == half_cache_line, "aligned_particle_aos must be 32 bytes wide.");
 
 using particle = aligned_particle_aos *__restrict;
 
@@ -47,6 +47,13 @@ struct action
 };
 
 // Domains
+struct constant
+{
+    float m_constant;
+    constant(float v);
+    void emit(float &v);
+};
+
 struct point
 {
     XMFLOAT3 m_point;
@@ -60,13 +67,6 @@ struct cylinder
     float m_rd1, m_rd2;
     cylinder(XMVECTOR const &p1, XMVECTOR const &p2, float r1, float r2);
     void emit(XMFLOAT3 &v);
-};
-
-struct constant
-{
-    float m_constant;
-    constant(float v);
-    void emit(float &v);
 };
 
 struct random
@@ -84,6 +84,14 @@ struct position : initializer
     domain m_domain;
     position(domain new_domain) : m_domain(new_domain){};
     void apply(float dt, particle p) override { m_domain.emit(p->position); };
+};
+
+template <typename domain>
+struct size : initializer
+{
+    domain m_domain;
+    size(domain new_domain) : m_domain(new_domain){};
+    void apply(float dt, particle p) override { m_domain.emit(p->size); };
 };
 
 template <typename domain>
@@ -123,7 +131,7 @@ struct move : action
 
 struct gravity : action
 {
-    gravity(XMVECTOR const& v);
+    gravity(XMVECTOR const &v);
     XMVECTOR m_g;
     void apply(float dt, particle particle) override;
 };
@@ -139,7 +147,7 @@ struct mcallister_system
     size_t m_vertexbuffer_stride = 0;
     size_t m_num_particles_total = 0;
     size_t m_num_particles_alive = 0;
-    static constexpr int m_max_particles_per_frame = 1000;
+    static constexpr int m_max_particles_per_frame = 1;
 
 private:
     std::vector<std::unique_ptr<action>> m_actions = {};

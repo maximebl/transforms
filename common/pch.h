@@ -18,5 +18,6 @@
 #include "stdlib.h"
 #include <tchar.h>
 #include <cstddef>
+#include <system_error>
 
 #endif //PCH_H

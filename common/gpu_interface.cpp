@@ -16,18 +16,14 @@ device_resources::device_resources() : last_signaled_fence_value(0)
     }
 #endif
 
-    hr = CreateDXGIFactory2(DXGI_CREATE_FACTORY_DEBUG, __uuidof(IDXGIFactory6), (void **)&dxgi_factory);
-    ASSERT(SUCCEEDED(hr));
+    check_hr(CreateDXGIFactory2(DXGI_CREATE_FACTORY_DEBUG, IID_PPV_ARGS(&dxgi_factory)));
 
-    hr = dxgi_factory->EnumAdapterByGpuPreference(0,
-                                                  DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
-                                                  __uuidof(IDXGIAdapter4), (void **)&adapter);
-    ASSERT(SUCCEEDED(hr));
+    check_hr(dxgi_factory->EnumAdapterByGpuPreference(0,
+                                                      DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+                                                      IID_PPV_ARGS(&adapter)));
 
-    hr = D3D12CreateDevice((IUnknown *)adapter, D3D_FEATURE_LEVEL_12_1, __uuidof(ID3D12Device), (void **)&device);
-    ASSERT(SUCCEEDED(hr));
-
-    device->SetName(L"main_device");
+    check_hr(D3D12CreateDevice((IUnknown *)adapter, D3D_FEATURE_LEVEL_12_1, IID_PPV_ARGS(&device)));
+    NAME_D3D12_OBJECT(device);
 
     srv_desc_handle_incr_size = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
@@ -35,18 +31,15 @@ device_resources::device_resources() : last_signaled_fence_value(0)
     {
         D3D12_COMMAND_QUEUE_DESC cmd_queue_desc;
         cmd_queue_desc.NodeMask = DEFAULT_NODE;
-        cmd_queue_desc.Priority = D3D12_COMMAND_QUEUE_PRIORITY::D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
-        cmd_queue_desc.Type = D3D12_COMMAND_LIST_TYPE::D3D12_COMMAND_LIST_TYPE_DIRECT;
-        cmd_queue_desc.Flags = D3D12_COMMAND_QUEUE_FLAGS::D3D12_COMMAND_QUEUE_FLAG_NONE;
-        hr = device->CreateCommandQueue(&cmd_queue_desc, __uuidof(ID3D12CommandQueue), (void **)&cmd_queue);
-
-        ASSERT(SUCCEEDED(hr));
-        cmd_queue->SetName(L"main_cmd_queue");
+        cmd_queue_desc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+        cmd_queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+        cmd_queue_desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+        check_hr(device->CreateCommandQueue(&cmd_queue_desc, IID_PPV_ARGS(&cmd_queue)));
+        NAME_D3D12_OBJECT(cmd_queue);
     }
 
-    hr = device->CreateFence(0, D3D12_FENCE_FLAGS::D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence), (void **)&fence);
-    ASSERT(SUCCEEDED(hr));
-    fence->SetName(L"main_fence");
+    check_hr(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)));
+    NAME_D3D12_OBJECT(fence);
 
     DXGI_SWAP_CHAIN_DESC1 sd;
     {
@@ -59,28 +52,25 @@ device_resources::device_resources() : last_signaled_fence_value(0)
         sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
         sd.SampleDesc.Count = 1;
         sd.SampleDesc.Quality = 0;
-        sd.SwapEffect = DXGI_SWAP_EFFECT::DXGI_SWAP_EFFECT_FLIP_DISCARD;
-        sd.AlphaMode = DXGI_ALPHA_MODE::DXGI_ALPHA_MODE_UNSPECIFIED;
-        sd.Scaling = DXGI_SCALING::DXGI_SCALING_STRETCH;
+        sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        sd.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
+        sd.Scaling = DXGI_SCALING_STRETCH;
         sd.Stereo = FALSE;
     }
 
     IDXGISwapChain1 *swap_chain = NULL;
-    hr = dxgi_factory->CreateSwapChainForHwnd(
+    check_hr(dxgi_factory->CreateSwapChainForHwnd(
         (IUnknown *)cmd_queue,
         g_hwnd,
         &sd,
         NULL,
         NULL,
-        &swap_chain);
-    ASSERT(SUCCEEDED(hr));
+        &swap_chain));
 
-    hr = swap_chain->QueryInterface(__uuidof(IDXGISwapChain1), (void **)&(swapchain));
-    ASSERT(SUCCEEDED(hr));
-    swap_chain->Release();
+    check_hr(swap_chain->QueryInterface(IID_PPV_ARGS(&swapchain)));
+    safe_release(swap_chain);
 
-    hr = swapchain->SetMaximumFrameLatency(NUM_BACK_BUFFERS);
-    ASSERT(SUCCEEDED(hr));
+    check_hr(swapchain->SetMaximumFrameLatency(NUM_BACK_BUFFERS));
 
     swapchain_event = swapchain->GetFrameLatencyWaitableObject();
     cpu_wait_event = CreateEventEx(nullptr, NULL, NULL, EVENT_ALL_ACCESS);
@@ -92,10 +82,9 @@ device_resources::device_resources() : last_signaled_fence_value(0)
         rtv_heap_desc.NumDescriptors = NUM_BACK_BUFFERS;
         rtv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 
-        hr = device->CreateDescriptorHeap(&rtv_heap_desc, __uuidof(ID3D12DescriptorHeap), (void **)&rtv_desc_heap);
-        ASSERT(SUCCEEDED(hr));
+        check_hr(device->CreateDescriptorHeap(&rtv_heap_desc, IID_PPV_ARGS(&rtv_desc_heap)));
+        NAME_D3D12_OBJECT(rtv_desc_heap);
 
-        rtv_desc_heap->SetName(L"main_rtv_desc_heap");
         rtv_handle_incr_size = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
         D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = rtv_desc_heap->GetCPUDescriptorHandleForHeapStart();
@@ -116,82 +105,56 @@ device_resources::device_resources() : last_signaled_fence_value(0)
         dsv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
         dsv_heap_desc.NumDescriptors = 1;
         dsv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-        hr = device->CreateDescriptorHeap(&dsv_heap_desc, __uuidof(ID3D12DescriptorHeap), (void **)&dsv_heap);
-
-        ASSERT(SUCCEEDED(hr));
-        dsv_heap->SetName(L"main_dsv_heap");
+        check_hr(device->CreateDescriptorHeap(&dsv_heap_desc, IID_PPV_ARGS(&dsv_heap)));
+        NAME_D3D12_OBJECT(dsv_heap);
     }
 
     // create depth-stencil view (DSV)
-    {
-        D3D12_CLEAR_VALUE clear_value;
-        clear_value.DepthStencil.Depth = 1.0f;
-        clear_value.DepthStencil.Stencil = 0;
-        clear_value.Format = dsv_format;
-
-        hr = device->CreateCommittedResource(
-            &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
-            D3D12_HEAP_FLAG_NONE,
-            &CD3DX12_RESOURCE_DESC::Tex2D(
-                dsv_format,
-                g_hwnd_width,
-                g_hwnd_height,
-                1, 0, 1, 0,
-                D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL),
-            D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear_value,
-            __uuidof(ID3D12Resource), (void **)&dsv_resource);
-        dsv_resource->SetName(L"dsv_resource");
-        ASSERT(SUCCEEDED(hr));
-
-        D3D12_DEPTH_STENCIL_VIEW_DESC dsv_desc;
-        dsv_desc.Flags = D3D12_DSV_FLAG_NONE;
-        dsv_desc.Format = dsv_format;
-        dsv_desc.Texture2D.MipSlice = 0;
-        dsv_desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
-
-        device->CreateDepthStencilView(
-            dsv_resource,
-            &dsv_desc,
-            dsv_heap->GetCPUDescriptorHandleForHeapStart());
-    }
+    create_dsv(g_hwnd_width, g_hwnd_height);
 }
 
-void device_resources::create_rootsig(std::vector<CD3DX12_ROOT_PARAMETER1> *params, const wchar_t *name)
+void device_resources::create_rootsig(std::vector<CD3DX12_ROOT_PARAMETER1> *params,
+                                      std::vector<CD3DX12_STATIC_SAMPLER_DESC> *samplers)
 {
     ID3DBlob *rs_blob = NULL;
 
     D3D12_FEATURE_DATA_ROOT_SIGNATURE feature_data = {};
     feature_data.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_1;
-    hr = device->CheckFeatureSupport(D3D12_FEATURE_ROOT_SIGNATURE, (void *)&feature_data, sizeof(feature_data));
-    ASSERT(SUCCEEDED(hr));
+    check_hr(device->CheckFeatureSupport(D3D12_FEATURE_ROOT_SIGNATURE, (void *)&feature_data, sizeof(feature_data)));
 
     ID3DBlob *error_blob = NULL;
 
-    D3D12_VERSIONED_ROOT_SIGNATURE_DESC versioned_rootsig_desc;
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC versioned_rootsig_desc = {};
     versioned_rootsig_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
     versioned_rootsig_desc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    ASSERT2(params, "At least 1 root signature parameter is required");
     versioned_rootsig_desc.Desc_1_1.NumParameters = (UINT)params->size();
     versioned_rootsig_desc.Desc_1_1.pParameters = params->data();
-    versioned_rootsig_desc.Desc_1_1.NumStaticSamplers = 0;
-    versioned_rootsig_desc.Desc_1_1.pStaticSamplers = NULL;
+
+    if (samplers)
+    {
+        versioned_rootsig_desc.Desc_1_1.NumStaticSamplers = (UINT)samplers->size();
+        versioned_rootsig_desc.Desc_1_1.pStaticSamplers = samplers->data();
+    }
+
     hr = D3D12SerializeVersionedRootSignature(&versioned_rootsig_desc, &rs_blob, &error_blob);
-    ASSERT(SUCCEEDED(hr));
 
     if (error_blob)
     {
-        wchar_t *error_msg = (wchar_t *)error_blob->GetBufferPointer();
-        OutputDebugStringW(error_msg);
+        char *error_msg = (char *)error_blob->GetBufferPointer();
+        OutputDebugStringA(error_msg);
     }
     safe_release(error_blob);
+    check_hr(hr);
 
-    hr = device->CreateRootSignature(
+    check_hr(device->CreateRootSignature(
         DEFAULT_NODE,
         rs_blob->GetBufferPointer(),
         rs_blob->GetBufferSize(),
-        __uuidof(ID3D12RootSignature),
-        (void **)&rootsig);
-    ASSERT(SUCCEEDED(hr));
-    rootsig->SetName(name);
+        IID_PPV_ARGS(&rootsig)));
+
+    NAME_D3D12_OBJECT(rootsig);
 }
 
 void device_resources::create_rendertargets()
@@ -199,13 +162,11 @@ void device_resources::create_rendertargets()
     for (UINT i = 0; i < NUM_BACK_BUFFERS; i++)
     {
         ID3D12Resource *back_buffer = NULL;
-        swapchain->GetBuffer(i, __uuidof(ID3D12Resource), (void **)&back_buffer);
+        check_hr(swapchain->GetBuffer(i, IID_PPV_ARGS(&back_buffer)));
         device->CreateRenderTargetView(back_buffer, NULL, rtv_descriptors[i]);
-        main_rt_resources[i] = back_buffer;
+        back_buffers[i] = back_buffer;
 
-        wchar_t buf[20];
-        swprintf_s(buf, 20, L"%s%d", L"rtv_resource_", i);
-        main_rt_resources[i]->SetName(buf);
+        NAME_D3D12_OBJECT_INDEXED(back_buffer, i);
     }
 }
 
@@ -216,22 +177,18 @@ void device_resources::create_dsv(UINT64 width, UINT height)
     clear_value.DepthStencil.Stencil = 0;
     clear_value.Format = dsv_format;
 
-    hr = device->CreateCommittedResource(
+    check_hr(device->CreateCommittedResource(
         &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
         D3D12_HEAP_FLAG_NONE,
         &CD3DX12_RESOURCE_DESC::Tex2D(
             dsv_format,
-            width,
-            height,
+            g_hwnd_width,
+            g_hwnd_height,
             1, 0, 1, 0,
             D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL),
-        D3D12_RESOURCE_STATE_DEPTH_WRITE,
-        &clear_value,
-        __uuidof(ID3D12Resource),
-        (void **)&dsv_resource);
-    ASSERT(SUCCEEDED(hr));
-
-    dsv_resource->SetName(L"dsv_resource");
+        D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear_value,
+        IID_PPV_ARGS(&dsv_resource)));
+    NAME_D3D12_OBJECT(dsv_resource);
 
     D3D12_DEPTH_STENCIL_VIEW_DESC dsv_desc;
     dsv_desc.Flags = D3D12_DSV_FLAG_NONE;
@@ -274,11 +231,7 @@ void device_resources::resize_swapchain(int width, int height)
 void device_resources::cleanup_rendertargets()
 {
     for (UINT i = 0; i < NUM_BACK_BUFFERS; i++)
-        if (main_rt_resources[i])
-        {
-            main_rt_resources[i]->Release();
-            main_rt_resources[i] = nullptr;
-        }
+        safe_release(back_buffers[i]);
 }
 
 device_resources::~device_resources()
@@ -290,12 +243,7 @@ device_resources::~device_resources()
 
     // cleanup render targets
     for (UINT i = 0; i < NUM_BACK_BUFFERS; i++)
-    {
-        if (main_rt_resources[i])
-        {
-            safe_release(main_rt_resources[i]);
-        }
-    }
+        safe_release(back_buffers[i]);
 
     safe_release(adapter);
     safe_release(dxgi_factory);
@@ -467,17 +415,17 @@ void set_viewport_rects(ID3D12GraphicsCommandList *cmd_list)
 COMMON_API D3D12_DEPTH_STENCIL_DESC create_outline_dss()
 {
     D3D12_DEPTH_STENCIL_DESC outline_dss = {};
-    outline_dss.DepthWriteMask = D3D12_DEPTH_WRITE_MASK::D3D12_DEPTH_WRITE_MASK_ALL;
+    outline_dss.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
     outline_dss.DepthEnable = true;
     outline_dss.StencilEnable = true;
     outline_dss.StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK;
     outline_dss.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;
-    outline_dss.DepthFunc = D3D12_COMPARISON_FUNC::D3D12_COMPARISON_FUNC_LESS;
+    outline_dss.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
 
-    outline_dss.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC::D3D12_COMPARISON_FUNC_NOT_EQUAL;
-    outline_dss.FrontFace.StencilDepthFailOp = D3D12_STENCIL_OP::D3D12_STENCIL_OP_KEEP;
-    outline_dss.FrontFace.StencilPassOp = D3D12_STENCIL_OP::D3D12_STENCIL_OP_KEEP;
-    outline_dss.FrontFace.StencilFailOp = D3D12_STENCIL_OP::D3D12_STENCIL_OP_KEEP;
+    outline_dss.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_NOT_EQUAL;
+    outline_dss.FrontFace.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
+    outline_dss.FrontFace.StencilPassOp = D3D12_STENCIL_OP_KEEP;
+    outline_dss.FrontFace.StencilFailOp = D3D12_STENCIL_OP_KEEP;
     outline_dss.BackFace = outline_dss.FrontFace;
     return outline_dss;
 }
@@ -581,7 +529,7 @@ bool compile_shader(const wchar_t *file, const wchar_t *entry, shader_type type,
             return false;
         }
     }
-    ASSERT(SUCCEEDED(hr));
+    check_hr(hr);
 
     return true;
 }
@@ -693,11 +641,11 @@ size_t align_up(size_t value, size_t alignment)
     return ((value + (alignment - 1)) & ~(alignment - 1));
 }
 
-upload_buffer::upload_buffer(ID3D12Device *device, size_t max_element_count, size_t element_byte_size, const char* name)
+upload_buffer::upload_buffer(ID3D12Device *device, size_t max_element_count, size_t element_byte_size, const char *name)
     : m_element_byte_size(element_byte_size)
 {
     m_max_element_count = (UINT)max_element_count;
-    m_buffer_size = (UINT)m_element_byte_size * (UINT)max_element_count;
+    m_buffer_size = UINT(m_element_byte_size * max_element_count);
 
     device->CreateCommittedResource(
         &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),

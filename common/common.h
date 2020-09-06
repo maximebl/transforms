@@ -30,12 +30,19 @@ extern COMMON_API demos demo_to_show;
 extern COMMON_API bool demo_changed;
 
 COMMON_API void set_dll_paths(const wchar_t *path);
-COMMON_API void failed_assert(const char *file, int line, const char *statement);
+COMMON_API void failed_assert(const char *file, int line, const char *statement, std::string message = "No message provided.");
 COMMON_API std::string last_error();
 
-#define ASSERT(b) \
-    if (!(b))     \
-    failed_assert(__FILE__, __LINE__, #b)
+COMMON_API void check_hr(HRESULT hr);
+COMMON_API std::string hr_msg(HRESULT hr);
+
+#define ASSERT2(statement, message) \
+    if (!(statement))               \
+    failed_assert(__FILE__, __LINE__, #statement, message)
+
+#define ASSERT(statement) \
+    if (!(statement))     \
+    failed_assert(__FILE__, __LINE__, #statement)
 
 #define safe_release(p)     \
     do                      \

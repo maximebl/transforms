@@ -4,6 +4,11 @@
 
 HRESULT hr = 0;
 
+void check_hr(HRESULT hr)
+{
+    ASSERT2(SUCCEEDED(hr), hr_msg(hr));
+}
+
 void set_dll_paths(const wchar_t *path)
 {
     DWORD l_win32exe = GetModuleFileNameW(NULL, win32_exe_location, MAX_PATH);
@@ -23,18 +28,20 @@ void set_dll_paths(const wchar_t *path)
     wcscat(tempgamecodedll_path, temp_prefix);
 }
 
-void failed_assert(const char *file, int line, const char *statement)
+void failed_assert(const char *file, int line, const char *statement, std::string message)
 {
     static bool debug = true;
 
     if (debug)
     {
         wchar_t str[1024];
-        wchar_t message[1024];
-        wchar_t wfile[1024];
-        mbstowcs_s(NULL, message, statement, 1024);
-        mbstowcs_s(NULL, wfile, file, 1024);
-        wsprintfW(str, L"Failed: (%s)\n\nFile: %s\nLine: %d\n\n", message, wfile, line);
+        wchar_t statement_str[1024];
+        wchar_t file_str[1024];
+        wchar_t message_str[1024];
+        mbstowcs_s(NULL, statement_str, statement, 1024);
+        mbstowcs_s(NULL, file_str, file, 1024);
+        mbstowcs_s(NULL, message_str, message.c_str(), 1024);
+        wsprintfW(str, L"Failed statement: (%s)\n\nFile: %s\n\nLine: %d\n\nMessage: %s\n\n", statement_str, file_str, line, message_str);
 
         if (IsDebuggerPresent())
         {
@@ -67,4 +74,9 @@ std::string last_error()
                    NULL, GetLastError(), MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
                    error_msg, _countof(error_msg), NULL);
     return std::string(error_msg);
+}
+
+std::string hr_msg(HRESULT hr)
+{
+    return std::system_category().message(hr);
 }

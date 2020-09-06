@@ -25,3 +25,14 @@ XMMATRIX __vectorcall view_matrix_lh(FXMVECTOR camera_pos,
     T.r[3].m128_f32[3] = 1.f;
     return T;
 }
+
+DirectX::XMFLOAT4X4 Identity4x4()
+{
+    DirectX::XMFLOAT4X4 I(
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f);
+
+    return I;
+}

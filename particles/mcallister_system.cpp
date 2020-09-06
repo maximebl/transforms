@@ -17,10 +17,10 @@ mcallister_system::mcallister_system(source *src, std::vector<action *> actions,
 
     // allocate sizeof AOS (32 bytes) * number of particles (1000) =  32000 bytes
     // Multiplies 32000 by the frame_count inside the function to reach 128000 bytes total
-    m_vertexbuffer_stride = m_max_particles_per_frame * size;
+    m_vertexbuffer_stride = m_max_particles_per_frame * byte_size;
     m_num_particles_total = m_max_particles_per_frame * NUM_BACK_BUFFERS;
 
-    m_vertex_upload_resource = new upload_buffer(device, m_num_particles_total, size, "particles_vertices");
+    m_vertex_upload_resource = new upload_buffer(device, m_num_particles_total, byte_size, "particles_vertices");
 }
 
 mcallister_system::~mcallister_system()
@@ -31,7 +31,7 @@ mcallister_system::~mcallister_system()
 void mcallister_system::reset(particle ptr)
 {
     ptr->age = 0.f;
-    ptr->color = XMCOLOR(0.f, 0.f, 0.f, 0.f);
+    ptr->size = 1.f;
     ptr->position = XMFLOAT3(0.f, 0.f, 0.f);
     ptr->velocity = XMFLOAT3(0.f, 0.f, 0.f);
     m_num_particles_alive = 0;
@@ -39,7 +39,6 @@ void mcallister_system::reset(particle ptr)
 
 std::pair<particle, particle> mcallister_system::simulate(float dt, particle current_partition)
 {
-    PerformanceAPI_BeginEvent("simulation", nullptr, PERFORMANCEAPI_DEFAULT_COLOR);
 
     particle partition_start = current_partition;
     particle partition_ptr = current_partition + m_num_particles_alive;
@@ -63,9 +62,8 @@ std::pair<particle, particle> mcallister_system::simulate(float dt, particle cur
     m_previous_particle = current_partition;
 
     // parition the pool, reconcile the emitted with the timed-out
-    partition_ptr = std::partition(partition_start, partition_ptr, [](auto &v) { return v.age <= 5; });
+    partition_ptr = std::partition(partition_start, partition_ptr, [](auto &v) { return v.age <= 10.f; });
 
-    PerformanceAPI_EndEvent();
 
     return std::make_pair(partition_start, partition_ptr);
 }
@@ -186,7 +184,6 @@ void cylinder::emit(XMFLOAT3 &v)
     std::uniform_real_distribution<> distr(0.0, XM_2PI); // define the range
     float random_float = (float)distr(gen);
 
-    //random_float = 5.81135607f;
     // Create a vector that represent a random position on a unit circle's edge
     XMVECTOR random_circle_pos = XMVectorSet(std::cosf(random_float), std::sinf(random_float), 0.f, 0.f);
 
@@ -196,7 +193,6 @@ void cylinder::emit(XMFLOAT3 &v)
     // Pick a random point on the disc
     std::uniform_real_distribution<> distr2(0.0, 1.0);
     float random_float2 = (float)distr2(gen);
-    //random_float2 = 0.128962114f;
     XMVECTOR random_point = m_p1 + (m_p2 * random_float2);
     random_point = random_point + XMVectorScale(m_u, XMVectorGetX(scaled_circle_pos)) + XMVectorScale(m_v, XMVectorGetY(scaled_circle_pos));
     XMStoreFloat3(&v, random_point);

@@ -118,7 +118,7 @@ public:
     device_resources();
     ~device_resources();
 
-    void create_rootsig(std::vector<CD3DX12_ROOT_PARAMETER1> *params, const wchar_t *name);
+    void create_rootsig(std::vector<CD3DX12_ROOT_PARAMETER1> *params, std::vector<CD3DX12_STATIC_SAMPLER_DESC> *samplers);
     void create_rendertargets();
     void create_dsv(UINT64 width, UINT height);
     D3D12_GRAPHICS_PIPELINE_STATE_DESC create_default_pso_desc(std::vector<D3D12_INPUT_ELEMENT_DESC> *input_layouts);
@@ -152,7 +152,7 @@ public:
     UINT swapchain_flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT | DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtv_descriptors[NUM_BACK_BUFFERS];
-    ID3D12Resource *main_rt_resources[NUM_BACK_BUFFERS];
+    ID3D12Resource *back_buffers[NUM_BACK_BUFFERS];
     UINT srv_desc_handle_incr_size = 0;
     UINT rtv_handle_incr_size = 0;
 

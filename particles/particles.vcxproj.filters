@@ -27,10 +27,7 @@
     <ClInclude Include="mcallister_system.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\PerformanceAPI.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="..\PerformanceAPI_capi.h">
+    <ClInclude Include="DDSTextureLoader12.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
@@ -47,11 +44,16 @@
     <ClCompile Include="mcallister_system.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="DDSTextureLoader12.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
-    <FxCompile Include="shaders\default.hlsl" />
+    <FxCompile Include="shaders\points.hlsl" />
+    <FxCompile Include="shaders\billboards.hlsl" />
+    <FxCompile Include="shaders\common.hlsl" />
   </ItemGroup>
 </Project>

@@ -7,3 +7,5 @@
 COMMON_API inline DirectX::XMMATRIX __vectorcall view_matrix_lh(DirectX::FXMVECTOR camera_pos,
                                                                 DirectX::FXMVECTOR world_up_dir,
                                                                 DirectX::FXMVECTOR target_pos);
+
+COMMON_API DirectX::XMFLOAT4X4 Identity4x4();

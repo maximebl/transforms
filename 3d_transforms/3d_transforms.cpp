@@ -46,7 +46,7 @@ enum views
     wireframe
 };
 s_internal views shading;
-s_internal ID3D12PipelineState *flat_color_pso = nullptr;
+s_internal ID3D12PipelineState *billboard_pso = nullptr;
 s_internal ID3D12PipelineState *wireframe_pso = nullptr;
 s_internal ID3D12PipelineState *stencil_pso = nullptr;
 s_internal ID3D12PipelineState *outline_pso = nullptr;
@@ -187,7 +187,7 @@ extern "C" __declspec(dllexport) bool initialize()
     param_selected_inst_size.InitAsConstants(1, 2, 0, D3D12_SHADER_VISIBILITY_VERTEX);
     params.push_back(param_selected_inst_size);
 
-    dr->create_rootsig(&params, L"main_rootsig");
+    dr->create_rootsig(&params, nullptr);
 
     std::vector<D3D12_INPUT_ELEMENT_DESC> input_elem_descs;
     input_elem_descs.push_back({"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
@@ -197,7 +197,7 @@ extern "C" __declspec(dllexport) bool initialize()
     default_pso_desc.VS = {perspective_blob_vs->GetBufferPointer(), perspective_blob_vs->GetBufferSize()};
     default_pso_desc.PS = {perspective_blob_ps->GetBufferPointer(), perspective_blob_ps->GetBufferSize()};
     default_pso_desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-    hr = device->CreateGraphicsPipelineState(&default_pso_desc, IID_PPV_ARGS(&flat_color_pso));
+    hr = device->CreateGraphicsPipelineState(&default_pso_desc, IID_PPV_ARGS(&billboard_pso));
     ASSERT(SUCCEEDED(hr));
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC wireframe_pso_desc = default_pso_desc;
@@ -605,7 +605,7 @@ s_internal void update_camera()
     cam.update_view();
     XMStoreFloat4x4(&pass.view, cam.view);
     XMStoreFloat4x4(&pass.proj, XMMatrixTranspose(cam.proj));
-    frame->cb_passdata_upload->copy_data(0, (void *)&pass);
+    frame->cb_pass_upload->copy_data(0, (void *)&pass);
 }
 
 struct tree_item
@@ -1056,10 +1056,10 @@ extern "C" __declspec(dllexport) bool update_and_render()
 
     // render
     cmd_alloc->Reset();
-    cmdlist->Reset(cmd_alloc, flat_color_pso);
+    cmdlist->Reset(cmd_alloc, billboard_pso);
 
     cmdlist->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
-                                    dr->main_rt_resources[backbuffer_index],
+                                    dr->back_buffers[backbuffer_index],
                                     D3D12_RESOURCE_STATE_PRESENT,
                                     D3D12_RESOURCE_STATE_RENDER_TARGET));
 
@@ -1071,7 +1071,7 @@ extern "C" __declspec(dllexport) bool update_and_render()
     switch (shading)
     {
     case flat_color:
-        cmdlist->SetPipelineState(flat_color_pso);
+        cmdlist->SetPipelineState(billboard_pso);
         break;
 
     case wireframe:
@@ -1084,7 +1084,7 @@ extern "C" __declspec(dllexport) bool update_and_render()
 
     cmdlist->SetDescriptorHeaps(1, &instanceIDs_srv_heap);
     cmdlist->SetGraphicsRootSignature(dr->rootsig);
-    cmdlist->SetGraphicsRootConstantBufferView(0, frame->cb_passdata_upload->m_uploadbuffer->GetGPUVirtualAddress());
+    cmdlist->SetGraphicsRootConstantBufferView(0, frame->cb_pass_upload->m_uploadbuffer->GetGPUVirtualAddress());
     draw_render_items(cmdlist, &render_items);
 
     query->start("ui_rendering");
@@ -1092,7 +1092,7 @@ extern "C" __declspec(dllexport) bool update_and_render()
     query->stop("ui_rendering");
 
     cmdlist->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
-                                    dr->main_rt_resources[backbuffer_index],
+                                    dr->back_buffers[backbuffer_index],
                                     D3D12_RESOURCE_STATE_RENDER_TARGET,
                                     D3D12_RESOURCE_STATE_PRESENT));
 
@@ -1198,7 +1198,7 @@ extern "C" __declspec(dllexport) void cleanup()
 {
     dr->flush_cmd_queue();
 
-    safe_release(flat_color_pso);
+    safe_release(billboard_pso);
     safe_release(wireframe_pso);
     safe_release(outline_pso);
     safe_release(stencil_pso);
