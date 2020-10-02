@@ -9,3 +9,5 @@ COMMON_API inline DirectX::XMMATRIX __vectorcall view_matrix_lh(DirectX::FXMVECT
                                                                 DirectX::FXMVECTOR target_pos);
 
 COMMON_API DirectX::XMFLOAT4X4 Identity4x4();
+COMMON_API DirectX::XMFLOAT3X3 Identity3x3();
+COMMON_API float random_float(float first, float second);

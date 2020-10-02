@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "math_helpers.h"
+#include <random>
 
 using namespace DirectX;
 
@@ -35,4 +36,22 @@ DirectX::XMFLOAT4X4 Identity4x4()
         0.0f, 0.0f, 0.0f, 1.0f);
 
     return I;
+}
+
+DirectX::XMFLOAT3X3 Identity3x3()
+{
+    DirectX::XMFLOAT3X3 I(
+        1.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 1.0f);
+
+    return I;
+}
+
+float random_float(float first, float second)
+{
+    std::random_device rd;                                                 // obtain a random number from hardware
+    std::mt19937 gen(rd());                                                // seed the generator
+    std::uniform_real_distribution<> distr((double)first, (double)second); // define the range
+    return (float)distr(gen);
 }

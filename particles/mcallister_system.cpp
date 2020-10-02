@@ -1,7 +1,6 @@
 #include "pch.h"
 #include "mcallister_system.h"
 #include <algorithm>
-#include <random>
 #include "../PerformanceAPI_capi.h"
 
 namespace particle
@@ -15,12 +14,10 @@ mcallister_system::mcallister_system(source *src, std::vector<action *> actions,
     for (action *act : actions)
         m_actions.emplace_back(act);
 
-    // allocate sizeof AOS (32 bytes) * number of particles (1000) =  32000 bytes
-    // Multiplies 32000 by the frame_count inside the function to reach 128000 bytes total
-    m_vertexbuffer_stride = m_max_particles_per_frame * byte_size;
+    m_vertexbuffer_stride = m_max_particles_per_frame * particle_byte_size;
     m_num_particles_total = m_max_particles_per_frame * NUM_BACK_BUFFERS;
 
-    m_vertex_upload_resource = new upload_buffer(device, m_num_particles_total, byte_size, "particles_vertices");
+    m_vertex_upload_resource = new upload_buffer(device, m_num_particles_total, particle_byte_size, false, "particles_vertices");
 }
 
 mcallister_system::~mcallister_system()
@@ -32,40 +29,80 @@ void mcallister_system::reset(particle ptr)
 {
     ptr->age = 0.f;
     ptr->size = 1.f;
-    ptr->position = XMFLOAT3(0.f, 0.f, 0.f);
-    ptr->velocity = XMFLOAT3(0.f, 0.f, 0.f);
+    ptr->position = XMFLOAT4(0.f, 0.f, 0.f, 0.f);
+    ptr->velocity = XMFLOAT4(0.f, 0.f, 0.f, 0.f);
     m_num_particles_alive = 0;
 }
 
-std::pair<particle, particle> mcallister_system::simulate(float dt, particle current_partition)
+void mcallister_system::simulate(float dt, frame_resource *frame)
 {
-
-    particle partition_start = current_partition;
-    particle partition_ptr = current_partition + m_num_particles_alive;
-    particle partition_end = current_partition + m_max_particles_per_frame;
-
-    for (size_t i = 0; i < m_num_particles_alive; i++)
+    if (m_simulation_mode == simulation_mode::gpu)
     {
-        partition_start[i] = m_previous_particle[i];
-
-        // Run actions
-        for (auto &act : m_actions)
-        {
-            act.get()->apply(dt, partition_start + i);
-        }
     }
 
-    // Spawn new particles
-    partition_ptr = m_source->apply(dt, partition_ptr, partition_end);
+    if (m_simulation_mode == simulation_mode::cpu)
+    {
+        particle current_particle = reinterpret_cast<particle>(frame->particle_vb_range);
+        particle current_particle_start = current_particle;
+        particle current_particle_end = current_particle + m_num_particles_alive;
+        particle max_particle_end = current_particle + m_max_particles_per_frame;
 
-    m_num_particles_alive = partition_ptr - partition_start;
-    m_previous_particle = current_partition;
+        for (size_t i = 0; i < m_num_particles_alive; i++)
+        {
+            current_particle_start[i] = m_previous_particle[i];
 
-    // parition the pool, reconcile the emitted with the timed-out
-    partition_ptr = std::partition(partition_start, partition_ptr, [](auto &v) { return v.age <= 10.f; });
+            // Run actions
+            for (auto &act : m_actions)
+            {
+                act.get()->apply(dt, current_particle_start + i);
+            }
+        }
 
+        // Spawn new particles
+        current_particle_end = m_source->apply(dt, current_particle_end, max_particle_end);
 
-    return std::make_pair(partition_start, partition_ptr);
+        m_num_particles_alive = current_particle_end - current_particle_start;
+        m_previous_particle = current_particle;
+
+        // Partition the pool, reconcile the emitted with the timed-out particles
+        current_particle_end = std::partition(current_particle_start, current_particle_end,
+                                              [](auto &v) { return v.age <= 100.f; });
+
+        m_num_particles_to_render = UINT(current_particle_end - current_particle_start);
+
+        if (m_num_particles_to_render > 0)
+        {
+            // Create VBVs from particle pointers
+            size_t particle_gpu_data_start = m_vertex_upload_resource->m_uploadbuffer->GetGPUVirtualAddress();
+            UINT particle_vb_size = (UINT)m_vertexbuffer_stride;
+            UINT particle_vb_stride = (UINT)particle_byte_size;
+            BYTE *particle_cpu_data_start = m_vertex_upload_resource->m_mapped_data;
+
+            // Position data
+            size_t position_offset = (BYTE *)&current_particle_start->position - particle_cpu_data_start;
+            m_VBVs[0].BufferLocation = particle_gpu_data_start + position_offset;
+            m_VBVs[0].SizeInBytes = particle_vb_size - offsetof(aligned_particle_aos, position);
+            m_VBVs[0].StrideInBytes = particle_vb_stride;
+
+            // Size data
+            size_t size_offset = (BYTE *)&current_particle_start->size - particle_cpu_data_start;
+            m_VBVs[1].BufferLocation = particle_gpu_data_start + size_offset;
+            m_VBVs[1].SizeInBytes = particle_vb_size - offsetof(aligned_particle_aos, size);
+            m_VBVs[1].StrideInBytes = particle_vb_stride;
+
+            // Velocity data
+            size_t velocity_offset = (BYTE *)&current_particle_start->velocity - particle_cpu_data_start;
+            m_VBVs[2].BufferLocation = particle_gpu_data_start + velocity_offset;
+            m_VBVs[2].SizeInBytes = particle_vb_size - offsetof(aligned_particle_aos, velocity);
+            m_VBVs[2].StrideInBytes = particle_vb_stride;
+
+            // Age data
+            size_t age_offset = (BYTE *)&current_particle_start->age - particle_cpu_data_start;
+            m_VBVs[3].BufferLocation = particle_gpu_data_start + age_offset;
+            m_VBVs[3].SizeInBytes = particle_vb_size - offsetof(aligned_particle_aos, age);
+            m_VBVs[3].StrideInBytes = particle_vb_stride;
+        }
+    }
 }
 
 BYTE *mcallister_system::get_frame_partition(int frame_index)
@@ -120,12 +157,12 @@ particle flow::apply(float dt, particle begin, particle end)
 }
 
 // Initializers
-point::point(XMFLOAT3 v)
+point::point(XMFLOAT4 v)
 {
     m_point = v;
 }
 
-void point::emit(XMFLOAT3 &v)
+void point::emit(XMFLOAT4 &v)
 {
     v = m_point;
 }
@@ -148,10 +185,7 @@ random::random(float first, float second)
 
 void random::emit(float &v)
 {
-    std::random_device rd;                                     // obtain a random number from hardware
-    std::mt19937 gen(rd());                                    // seed the generator
-    std::uniform_real_distribution<> distr(m_first, m_second); // define the range
-    v = (float)distr(gen);
+    v = random_float(m_first, m_second);
 }
 
 cylinder::cylinder(XMVECTOR const &pt1, XMVECTOR const &pt2, float rd1, float rd2)
@@ -176,37 +210,33 @@ cylinder::cylinder(XMVECTOR const &pt1, XMVECTOR const &pt2, float rd1, float rd
     m_v = XMVector3Cross(norm_p2, m_u);
 }
 
-void cylinder::emit(XMFLOAT3 &v)
+void cylinder::emit(XMFLOAT4 &v)
 {
     // Random number between 0 and 2PI
-    std::random_device rd;                               // obtain a random number from hardware
-    std::mt19937 gen(rd());                              // seed the generator
-    std::uniform_real_distribution<> distr(0.0, XM_2PI); // define the range
-    float random_float = (float)distr(gen);
+    float rand_float = random_float(0.f, XM_2PI);
 
     // Create a vector that represent a random position on a unit circle's edge
-    XMVECTOR random_circle_pos = XMVectorSet(std::cosf(random_float), std::sinf(random_float), 0.f, 0.f);
+    XMVECTOR random_circle_pos = XMVectorSet(cosf(rand_float), sinf(rand_float), 0.f, 0.f);
 
     // Scale it by the given radius
     XMVECTOR scaled_circle_pos = XMVectorScale(random_circle_pos, m_rd1);
 
     // Pick a random point on the disc
-    std::uniform_real_distribution<> distr2(0.0, 1.0);
-    float random_float2 = (float)distr2(gen);
-    XMVECTOR random_point = m_p1 + (m_p2 * random_float2);
+    float rand_float2 = random_float(0.f, 1.f);
+    XMVECTOR random_point = m_p1 + (m_p2 * rand_float2);
     random_point = random_point + XMVectorScale(m_u, XMVectorGetX(scaled_circle_pos)) + XMVectorScale(m_v, XMVectorGetY(scaled_circle_pos));
-    XMStoreFloat3(&v, random_point);
+    XMStoreFloat4(&v, random_point);
 }
 
 // Actions
 void move::apply(float dt, particle particle)
 {
     XMVECTOR vdt = XMVectorSet(dt, dt, dt, dt);
-    XMVECTOR pos = XMLoadFloat3(&particle->position);
-    XMVECTOR vel = XMLoadFloat3(&particle->velocity);
+    XMVECTOR pos = XMLoadFloat4(&particle->position);
+    XMVECTOR vel = XMLoadFloat4(&particle->velocity);
     pos = XMVectorMultiplyAdd(vel, vdt, pos);
     particle->age += dt;
-    XMStoreFloat3(&particle->position, pos);
+    XMStoreFloat4(&particle->position, pos);
 }
 
 gravity::gravity(XMVECTOR const &v)
@@ -217,9 +247,9 @@ gravity::gravity(XMVECTOR const &v)
 void gravity::apply(float dt, particle particle)
 {
     XMVECTOR vdt = XMVectorSet(dt, dt, dt, dt);
-    XMVECTOR vel = XMLoadFloat3(&particle->velocity);
+    XMVECTOR vel = XMLoadFloat4(&particle->velocity);
     vel = XMVectorMultiplyAdd(m_g, vdt, vel);
-    XMStoreFloat3(&particle->velocity, vel);
+    XMStoreFloat4(&particle->velocity, vel);
 }
 
 } // namespace particle

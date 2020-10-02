@@ -2,7 +2,6 @@
 #define PCH_H
 
 #include "framework.h"
-
 #include <assert.h>
 #include <d3d12.h>
 #include <dxgi1_6.h>

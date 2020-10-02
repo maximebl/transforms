@@ -80,3 +80,10 @@ std::string hr_msg(HRESULT hr)
 {
     return std::system_category().message(hr);
 }
+
+void wait_duration(DWORD duration)
+{
+    HANDLE event_handle = CreateEventEx(NULL, NULL, NULL, EVENT_ALL_ACCESS);
+    WaitForSingleObject(event_handle, duration);
+    CloseHandle(event_handle);
+}

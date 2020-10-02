@@ -13,6 +13,7 @@ extern COMMON_API HRESULT hr;
 extern COMMON_API HWND g_hwnd;
 extern COMMON_API UINT64 g_hwnd_width;
 extern COMMON_API UINT g_hwnd_height;
+extern COMMON_API float g_aspect_ratio;
 
 extern COMMON_API wchar_t gamecodedll_path[MAX_PATH];
 extern COMMON_API wchar_t tempgamecodedll_path[MAX_PATH];
@@ -32,6 +33,7 @@ extern COMMON_API bool demo_changed;
 COMMON_API void set_dll_paths(const wchar_t *path);
 COMMON_API void failed_assert(const char *file, int line, const char *statement, std::string message = "No message provided.");
 COMMON_API std::string last_error();
+COMMON_API void wait_duration(DWORD duration);
 
 COMMON_API void check_hr(HRESULT hr);
 COMMON_API std::string hr_msg(HRESULT hr);

@@ -10,6 +10,15 @@ ConstantBuffer<material> cb_material : register(b1);
 Texture2D fire_texture : register(t0);
 SamplerState linear_wrap : register(s0);
 
+// input layout
+struct vertex_in
+{
+    float4 position : POSITION;
+    float size : SIZE;
+    float4 velocity : VELOCITY;
+    float age : AGE;
+};
+
 struct vertex_out
 {
     float3 pos : POSITION;
@@ -29,36 +38,10 @@ struct pixel_out
     float4 color : SV_Target;
 };
 
-static uint rng_state;
-
-void rand_seed(int seed)
+vertex_out VS(uint vertex_id : SV_VertexID, vertex_in vs_in)
 {
-    // wang hash from: http://www.burtleburtle.net/bob/hash/integer.html
-    seed = (seed ^ 61) ^ (seed >> 16);
-    seed *= 9;
-    seed = seed ^ (seed >> 4);
-    seed *= 0x27d4eb2d;
-    seed = seed ^ (seed >> 15);
-
-    // set starting seed
-    rng_state = seed;
-}
-
-float rand()
-{
-    // LCG values from Numerical Recipes
-    rng_state = 1664525 * rng_state + 1013904223;
-
-    // Generate a random float in [0, 1)...
-    return float(rng_state) * (1.0 / 4294967296.0);
-}
-
-vertex_out VS(uint vertex_id : SV_VertexID ,vertex_in vs_in)
-{
-    rand_seed(vs_in.position.x);
-
     vertex_out gs_in;
-    gs_in.pos = vs_in.position;
+    gs_in.pos = vs_in.position.xyz;
     gs_in.size = vs_in.size;
     return gs_in;
 }
@@ -148,13 +131,18 @@ void GS(point vertex_out gs_in[1], inout TriangleStream<geo_out> stream)
 
 pixel_out PS(geo_out ps_in)
 {
-    float4 sampled_color = fire_texture.Sample(linear_wrap, ps_in.panning_texcoord);
+    float2 offset = float2(0.5f, 0.5f);
+    float tex_scale_factor = 0.5f;
+    // Center the texture coordinates and scale them by a texture scale factor
+    float2 scaled_texcoord = ((ps_in.panning_texcoord - offset) * tex_scale_factor) + offset;
+
+    float4 sampled_color = fire_texture.Sample(linear_wrap, scaled_texcoord);
     float panning_alpha = sampled_color.a;
 
     float4 inv_sampled_color = fire_texture.Sample(linear_wrap, ps_in.inv_panning_texcoord);
     float inv_panning_alpha = inv_sampled_color.a;
 
-    // Premultiply alpha for additive blending
+    // Premultiply alpha
     sampled_color.rgb *= panning_alpha;
     inv_sampled_color.rgb *= inv_panning_alpha;
 
@@ -170,7 +158,8 @@ pixel_out PS(geo_out ps_in)
 
     pixel_out ps_out;
 
-    //ps_out.color = sampled_color;
-    ps_out.color = float4(1.f,0.f,0.f,1.f);
+    ps_out.color = sampled_color;
+    //ps_out.color = float4(panning_alpha, 0.f, 0.f, 0.f);
+    //ps_out.color = float4(1.f,0.f,0.f,1.f);
     return ps_out;
 }

@@ -14,9 +14,7 @@
 
 using namespace DirectX;
 
-camera cam = camera((float)g_hwnd_width / (float)g_hwnd_height,
-                    XMConvertToRadians(45.f),
-                    XMVectorSet(0.f, 0.f, -10.f, 1.f));
+camera cam = camera( XMConvertToRadians(45.f), XMVectorSet(0.f, 0.f, -10.f, 1.f));
 
 extern "C" __declspec(dllexport) bool update_and_render();
 extern "C" __declspec(dllexport) void resize(int width, int height);
@@ -25,7 +23,7 @@ extern "C" __declspec(dllexport) void wndproc(UINT msg, WPARAM wParam, LPARAM lP
 extern "C" __declspec(dllexport) bool initialize();
 
 s_internal void init_pipeline();
-s_internal void create_render_item(std::string name, std::wstring mesh_name, int id);
+s_internal void create_render_item(std::string name, std::string mesh_name, int id);
 s_internal void draw_render_items(ID3D12GraphicsCommandList *cmd_list, const std::vector<render_item> *render_items);
 s_internal void update_camera();
 
@@ -88,7 +86,7 @@ s_internal instance *selected_inst;
 s_internal ID3D12DescriptorHeap *instanceIDs_srv_heap = nullptr;
 
 // Geometry
-s_internal std::unordered_map<std::wstring, mesh> geometries;
+s_internal std::unordered_map<std::string, mesh> geometries;
 
 // Camera
 s_internal pass_data pass;
@@ -226,7 +224,7 @@ extern "C" __declspec(dllexport) bool initialize()
     };
     WORD triangle_indices[6] = {0, 1, 3,
                                 1, 2, 3};
-    const wchar_t *mesh_name = L"triangle";
+    const char *mesh_name = "triangle";
     mesh triangle;
     triangle.name = mesh_name;
     create_mesh_data(device, cmdlist, mesh_name,
@@ -273,7 +271,7 @@ extern "C" __declspec(dllexport) bool initialize()
             4, 0, 3,
             4, 3, 7};
 
-    mesh_name = L"cube";
+    mesh_name = "cube";
     mesh cube;
     create_mesh_data(device, cmdlist, mesh_name,
                      sizeof(position_color), _countof(cube_vertices), (void *)cube_vertices,
@@ -320,7 +318,7 @@ extern "C" __declspec(dllexport) bool initialize()
     return true;
 }
 
-s_internal void create_render_item(std::string name, std::wstring mesh_name, int id)
+s_internal void create_render_item(std::string name, std::string mesh_name, int id)
 {
     render_item ri;
     ri.meshes = geometries[mesh_name];
@@ -498,24 +496,25 @@ DWORD __stdcall select_and_load_model(void *param)
 
         PathRemoveExtensionW(ofn.lpstrFile);
         wchar_t *mesh_name = PathFindFileNameW(ofn.lpstrFile);
+        char mesh_name_str[MAX_PATH];
+        wcstombs(mesh_name_str, mesh_name, MAX_PATH);
+
         mesh new_mesh;
         new_mesh.submeshes = submeshes;
         new_mesh.bounds.CreateFromPoints(new_mesh.bounds, min_point, max_point);
 
-        create_mesh_data(device, ui_requests_cmdlist, mesh_name,
+        create_mesh_data(device, ui_requests_cmdlist, mesh_name_str,
                          sizeof(position_color), mesh_vertices.size(), (void *)mesh_vertices.data(),
                          sizeof(WORD), mesh_indices.size(), (void *)mesh_indices.data(),
                          &new_mesh);
 
         UINT id = (UINT)render_items.size();
-        wchar_t id_str[12];
-        wsprintf(id_str, L"_%u", id);
-        StrCatW(mesh_name, id_str);
-        char ri_name[MAX_PATH];
-        wcstombs(ri_name, mesh_name, 100);
+        char id_str[12];
+        sprintf(id_str, "_%u", id);
+        strcat(mesh_name_str, id_str);
 
-        geometries[mesh_name] = new_mesh;
-        create_render_item(ri_name, mesh_name, id);
+        geometries[mesh_name_str] = new_mesh;
+        create_render_item(mesh_name_str, mesh_name_str, id);
 
         ui_requests_cmdlist->Close();
         dr->cmd_queue->ExecuteCommandLists(1, (ID3D12CommandList *const *)&ui_requests_cmdlist);
@@ -971,7 +970,7 @@ void imgui_update()
 
     ImGui::Begin("Debug info", &show_debug);
     imgui_mouse_pos();
-    imgui_pso_combo((int *)&shading);
+    imgui_combobox((int *)&shading, {"Flat color", "Wireframe"}, "View");
     ImGui::ColorEdit3("Background color", bg_color);
     ImGui::End();
 }
@@ -1207,12 +1206,13 @@ extern "C" __declspec(dllexport) void cleanup()
     safe_release(ui_requests_cmdalloc);
     safe_release(instanceIDs_srv_heap);
 
-    for (std::pair<std::wstring, mesh> geometry : geometries)
+    for (std::pair<std::string, mesh> geometry : geometries)
     {
         safe_release(geometry.second.resource->vertex_default);
         safe_release(geometry.second.resource->vertex_upload);
         safe_release(geometry.second.resource->index_default);
         safe_release(geometry.second.resource->index_upload);
+        delete geometry.second.resource;
     }
 
     imgui_shutdown();

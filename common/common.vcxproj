@@ -163,6 +163,7 @@
     <ClInclude Include="common.h" />
     <ClInclude Include="d3dx12.h" />
     <ClInclude Include="framework.h" />
+    <ClInclude Include="geometry_helpers.h" />
     <ClInclude Include="gpu_interface.h" />
     <ClInclude Include="gpu_query.h" />
     <ClInclude Include="imgui_helpers.h" />
@@ -177,6 +178,7 @@
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="dllmain.cpp" />
+    <ClCompile Include="geometry_helpers.cpp" />
     <ClCompile Include="gpu_interface.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>

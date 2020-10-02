@@ -58,6 +58,7 @@ int main()
     {
         g_hwnd_width = rect.right - rect.left;
         g_hwnd_height = rect.bottom - rect.top;
+        g_aspect_ratio = (float)g_hwnd_width / g_hwnd_height;
     }
 
     if (!gamecode.initialize())
@@ -248,6 +249,7 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_SIZE:
         if (game_is_ready && wParam != SIZE_MINIMIZED)
         {
+            g_aspect_ratio = (float)g_hwnd_width / g_hwnd_height;
             gamecode.resize(LOWORD(lParam), HIWORD(lParam));
         }
         return 0;

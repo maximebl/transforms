@@ -4,16 +4,20 @@
 
 struct pass_data
 {
-    DirectX::XMFLOAT4X4 view;
-    DirectX::XMFLOAT4X4 proj;
+    DirectX::XMFLOAT4X4 view = Identity4x4();
+    DirectX::XMFLOAT4X4 proj = Identity4x4();
     DirectX::XMFLOAT3 eye_pos;
-    float time;
+    float time = 0.f;
+    float delta_time = 0.f;
+    float aspect_ratio = 0.f;
+    float vert_cotangent = 0.f;
 };
 
 struct material_data
 {
     DirectX::XMFLOAT4X4 transform = Identity4x4();
     DirectX::XMFLOAT4X4 inv_transform = Identity4x4();
+    float vert_cotangent = 0.f;
 };
 
 class frame_cmd

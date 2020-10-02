@@ -14,6 +14,7 @@ device_resources::device_resources() : last_signaled_fence_value(0)
         debug->EnableDebugLayer();
         debug->SetEnableGPUBasedValidation(true);
     }
+    DXGIGetDebugInterface1(0, IID_PPV_ARGS(&graphics_analysis));
 #endif
 
     check_hr(CreateDXGIFactory2(DXGI_CREATE_FACTORY_DEBUG, IID_PPV_ARGS(&dxgi_factory)));
@@ -325,6 +326,18 @@ void device_resources::resize(int width, int height)
     create_dsv(width, height);
 }
 
+void device_resources::begin_capture()
+{
+    if (graphics_analysis != nullptr)
+        graphics_analysis->BeginCapture();
+}
+
+void device_resources::end_capture()
+{
+    if (graphics_analysis != nullptr)
+        graphics_analysis->EndCapture();
+}
+
 void device_resources::present(bool is_vsync)
 {
     UINT sync_interval = is_vsync ? 1 : 0;
@@ -502,6 +515,8 @@ bool compile_shader(const wchar_t *file, const wchar_t *entry, shader_type type,
     case pixel:
         strcpy(shader_target_str, "ps_5_1");
         break;
+    case compute:
+        strcpy(shader_target_str, "cs_5_1");
     default:
         break;
     }
@@ -540,37 +555,37 @@ void create_default_buffer(ID3D12Device *device,
                            size_t byte_size,
                            ID3D12Resource **upload_resource,
                            ID3D12Resource **default_resource,
-                           const wchar_t *name)
+                           const char *name,
+                           D3D12_RESOURCE_FLAGS flags)
 {
 
-    hr = device->CreateCommittedResource(
+    check_hr(device->CreateCommittedResource(
         &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
         D3D12_HEAP_FLAG_NONE,
-        &CD3DX12_RESOURCE_DESC::Buffer(byte_size),
+        &CD3DX12_RESOURCE_DESC::Buffer(byte_size, flags),
         D3D12_RESOURCE_STATE_COPY_DEST,
         nullptr,
-        IID_PPV_ARGS(default_resource));
-    ASSERT(SUCCEEDED(hr));
+        IID_PPV_ARGS(default_resource)));
     ID3D12Resource *p_default_resource = (*default_resource);
 
-    wchar_t resource_name[50];
-    wcscpy(resource_name, name);
-    wcscat(resource_name, L"_default_resource");
-    p_default_resource->SetName(resource_name);
+    char resource_name[50];
 
-    hr = device->CreateCommittedResource(
+    strcpy(resource_name, name);
+    strcat(resource_name, "_default_resource");
+    set_name(p_default_resource, resource_name);
+
+    check_hr(device->CreateCommittedResource(
         &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
         D3D12_HEAP_FLAG_NONE,
         &CD3DX12_RESOURCE_DESC::Buffer(byte_size),
         D3D12_RESOURCE_STATE_GENERIC_READ,
         nullptr,
-        IID_PPV_ARGS(upload_resource));
-    ASSERT(SUCCEEDED(hr));
+        IID_PPV_ARGS(upload_resource)));
     ID3D12Resource *p_upload_resource = (*upload_resource);
 
-    wcscpy(resource_name, name);
-    wcscat(resource_name, L"_upload_resource");
-    p_upload_resource->SetName(resource_name);
+    strcpy(resource_name, name);
+    strcat(resource_name, "_upload_resource");
+    set_name(p_upload_resource, resource_name);
 
     BYTE *mapped_data = nullptr;
     D3D12_RANGE range = {};
@@ -585,7 +600,7 @@ void create_default_buffer(ID3D12Device *device,
         byte_size);
 }
 
-void create_mesh_data(ID3D12Device *device, ID3D12GraphicsCommandList *cmd_list, const wchar_t *name,
+void create_mesh_data(ID3D12Device *device, ID3D12GraphicsCommandList *cmd_list, const char *name,
                       size_t vertex_stride, size_t vertex_count, void *vertex_data,
                       size_t index_stride, size_t index_count, void *index_data,
                       mesh *mesh)
@@ -599,9 +614,9 @@ void create_mesh_data(ID3D12Device *device, ID3D12GraphicsCommandList *cmd_list,
     mesh->resource->vbv.StrideInBytes = (UINT)vertex_stride;
     mesh->resource->vbv.SizeInBytes = (UINT)byte_size;
 
-    wchar_t resource_name[50];
-    wcscpy(resource_name, name);
-    wcscat(resource_name, L"_vertex");
+    char resource_name[50];
+    strcpy(resource_name, name);
+    strcat(resource_name, "_vertex");
     create_default_buffer(device, cmd_list,
                           vertex_data, byte_size,
                           &mesh->resource->vertex_upload, &mesh->resource->vertex_default, resource_name);
@@ -616,8 +631,8 @@ void create_mesh_data(ID3D12Device *device, ID3D12GraphicsCommandList *cmd_list,
         mesh->resource->ibv.Format = DXGI_FORMAT_R16_UINT;
         mesh->resource->ibv.SizeInBytes = (UINT)byte_size;
 
-        wcscpy(resource_name, name);
-        wcscat(resource_name, L"_index");
+        strcpy(resource_name, name);
+        strcat(resource_name, "_index");
         create_default_buffer(device, cmd_list,
                               index_data, byte_size,
                               &mesh->resource->index_upload, &mesh->resource->index_default, resource_name);
@@ -641,11 +656,16 @@ size_t align_up(size_t value, size_t alignment)
     return ((value + (alignment - 1)) & ~(alignment - 1));
 }
 
-upload_buffer::upload_buffer(ID3D12Device *device, size_t max_element_count, size_t element_byte_size, const char *name)
-    : m_element_byte_size(element_byte_size)
+upload_buffer::upload_buffer(ID3D12Device *device, size_t max_element_count, size_t element_byte_size, bool is_constant_buffer, const char *name)
+    : m_element_byte_size(element_byte_size), m_max_element_count((UINT)max_element_count)
 {
-    m_max_element_count = (UINT)max_element_count;
-    m_buffer_size = UINT(m_element_byte_size * max_element_count);
+
+    m_buffer_size = m_element_byte_size * max_element_count;
+
+    if (is_constant_buffer)
+    {
+        m_buffer_size = align_up(m_buffer_size, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+    }
 
     device->CreateCommittedResource(
         &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),

@@ -1,5 +1,6 @@
 #pragma once
 #include "common.h"
+#include <functional>
 #include <gpu_interface.h>
 #include "../imgui/imgui.h"
 #include "../imgui/imgui_impl_dx12.h"
@@ -67,67 +68,38 @@ void imgui_shutdown()
     safe_release(imgui_srv_heap);
 }
 
+void imgui_combobox(int *mode, std::vector<std::string> mode_str, std::string title, std::function<void(void)> on_change = nullptr)
+{
+    std::string current_mode = mode_str[*mode];
+    if (ImGui::BeginCombo(title.c_str(), current_mode.c_str()))
+    {
+        for (int i = 0; i < (int)mode_str.size(); ++i)
+        {
+            bool is_selected = (current_mode == mode_str[i]);
+            if (ImGui::Selectable(mode_str[i].c_str(), is_selected))
+            {
+                current_mode = mode_str[i];
+                *mode = i;
+                if (!is_selected && on_change)
+                {
+                    // On selection changed side-effect
+                    on_change();
+                }
+            }
+
+            if (is_selected)
+            {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        ImGui::EndCombo();
+    }
+}
+
 void imgui_app_combo()
 {
-    const char *demo_str[] = {"2D Transforms",
-                              "3D Transforms",
-                              "Particles"};
-    int demo_index = (int)demo_to_show;
-    const char *current_demo = demo_str[demo_index];
-    if (ImGui::BeginCombo("Demo to show", current_demo))
-    {
-        for (int i = 0; i < _countof(demo_str); ++i)
-        {
-            bool is_selected = (current_demo == demo_str[i]);
-            if (ImGui::Selectable(demo_str[i], is_selected))
-            {
-                current_demo = demo_str[i];
-                demo_to_show = (demos)i;
-                if (!is_selected)
-                {
-                    demo_changed = true;
-                }
-            }
-
-            if (is_selected)
-            {
-                ImGui::SetItemDefaultFocus();
-            }
-        }
-        ImGui::EndCombo();
-    }
+    imgui_combobox((int *)&demo_to_show, {"transforms2d", "transforms3d", "particles"}, "Demo to show", []() { demo_changed = true; });
 }
-
-void imgui_pso_combo(int *view)
-{
-    const char *view_str[] = {"Flat color",
-                              "Wireframe"};
-    int view_index = *view;
-    const char *current_view = view_str[view_index];
-    if (ImGui::BeginCombo("View", current_view))
-    {
-        for (int i = 0; i < _countof(view_str); ++i)
-        {
-            bool is_selected = (current_view == view_str[i]);
-            if (ImGui::Selectable(view_str[i], is_selected))
-            {
-                current_view = view_str[i];
-                *view = i;
-                if (!is_selected)
-                {
-                    // on changed side-effect
-                }
-            }
-
-            if (is_selected)
-            {
-                ImGui::SetItemDefaultFocus();
-            }
-        }
-        ImGui::EndCombo();
-    }
-}
-
 
 void imgui_mouse_pos()
 {

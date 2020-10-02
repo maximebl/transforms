@@ -4,6 +4,7 @@
 COMMON_API HWND g_hwnd;
 COMMON_API UINT64 g_hwnd_width;
 COMMON_API UINT g_hwnd_height;
+COMMON_API float g_aspect_ratio;
 COMMON_API wchar_t gamecodedll_path[MAX_PATH];
 COMMON_API wchar_t tempgamecodedll_path[MAX_PATH];
 COMMON_API wchar_t win32_exe_location[MAX_PATH];

@@ -7,6 +7,7 @@
 #include "mcallister_system.h"
 #include "camera.h"
 #include "DDSTextureLoader12.h"
+#include "geometry_helpers.h"
 
 using namespace DirectX;
 
@@ -19,9 +20,8 @@ extern "C" __declspec(dllexport) bool initialize();
 // App state
 s_internal void imgui_update();
 s_internal bool show_demo = true;
-s_internal bool is_vsync = true;
+s_internal bool is_vsync = false;
 s_internal bool is_waiting_present = true;
-s_internal cpu_timer timer;
 
 // Command objects
 s_internal device_resources *dr = nullptr;
@@ -40,9 +40,17 @@ s_internal ID3DBlob *billboard_blob_gs = nullptr;
 
 s_internal ID3DBlob *points_blob_vs = nullptr;
 s_internal ID3DBlob *points_blob_ps = nullptr;
+s_internal ID3DBlob *particle_sim_blob_cs = nullptr;
+s_internal ID3DBlob *particle_sim_blob_vs = nullptr;
+s_internal ID3DBlob *particle_sim_blob_ps = nullptr;
+s_internal ID3DBlob *floorgrid_blob_vs = nullptr;
+s_internal ID3DBlob *floorgrid_blob_ps = nullptr;
 
 s_internal ID3D12PipelineState *billboard_pso = nullptr;
 s_internal ID3D12PipelineState *point_pso = nullptr;
+s_internal ID3D12PipelineState *noproj_point_pso = nullptr;
+s_internal ID3D12PipelineState *particle_sim_pso = nullptr;
+s_internal ID3D12PipelineState *floorgrid_pso = nullptr;
 
 // Textures
 ID3D12DescriptorHeap *srv_heap = nullptr;
@@ -51,36 +59,43 @@ s_internal ID3D12Resource *fire_texture_default_resource = nullptr;
 s_internal ID3D12Resource *fire_texture_upload_resource = nullptr;
 s_internal material_data cb_material = {};
 
-// Queries data
-s_internal constexpr int NUM_QUERIES = 3;
+// Benchmarking
+s_internal cpu_timer timer;
+s_internal constexpr int NUM_QUERIES = 10;
 s_internal gpu_query *query = nullptr;
 s_internal std::string gpu_frame_time_query = "frame_gpu";
-s_internal std::string gpu_particles_time_query = "particles_gpu";
 s_internal std::string gpu_imgui_time_query = "imgui_gpu";
 s_internal std::string cpu_wait_time = "cpu_wait";
 s_internal std::string cpu_rest_of_frame = "cpu_rest_of_frame";
+
+s_internal std::string gpu_particles_time_query = "particles_gpu";
+s_internal std::string gpu_particles_sim_query = "particles_gpu_sim";
+s_internal std::string gpu_particles_draw_query = "particles_gpu_draw";
+
 s_internal std::string cpu_particle_sim = "cpu_particle_sim";
 
 // Particles data
-s_internal void imgui_particle_mode_combo(int *mode);
+s_internal ID3D12Resource *particle_output_default = nullptr;
+s_internal ID3D12Resource *particle_output_upload = nullptr;
+s_internal ID3D12Resource *particle_input_default = nullptr;
+s_internal ID3D12Resource *particle_input_upload = nullptr;
+s_internal ID3D12Resource *particle_reset_default = nullptr;
+s_internal ID3D12Resource *particle_reset_upload = nullptr;
 s_internal particle::mcallister_system *particle_system = nullptr;
+s_internal std::array<particle::aligned_particle_aos, particle_system->m_max_particles_per_frame> *particle_data = nullptr;
 s_internal bool should_reset_particles = false;
-enum class particle_rendering_mode
-{
-    point,
-    billboard,
-    overdraw
-};
-particle_rendering_mode rendering_mode = particle_rendering_mode::billboard;
 
 // Camera
 s_internal ImVec2 last_mouse_pos = {};
 void update_camera_pos();
-camera cam = camera((float)g_hwnd_width / (float)g_hwnd_height,
-                    0.25f * XM_PI,
-                    XMVectorSet(0.f, 0.f, -10.f, 1.f));
+camera cam = camera(0.25f * XM_PI, XMVectorSet(0.f, 0.f, -10.f, 1.f));
 
+// Scene
+mesh floor_grid = {};
 s_internal pass_data cb_pass = {};
+
+// Debugging
+IDXGraphicsAnalysis *ga;
 
 extern "C" __declspec(dllexport) bool initialize()
 {
@@ -89,9 +104,8 @@ extern "C" __declspec(dllexport) bool initialize()
 
     check_hr(SetThreadDescription(GetCurrentThread(), L"main_thread"));
 
-    cam = camera((float)g_hwnd_width / (float)g_hwnd_height,
-                 0.25f * XM_PI,
-                 XMVectorSet(0.f, 0.f, -10.f, 1.f));
+    // Initialize the camera
+    cam = camera(0.25f * XM_PI, XMVectorSet(0.f, 0.f, -10.f, 1.f));
 
     // Initialize device resources
     dr = new device_resources();
@@ -103,15 +117,22 @@ extern "C" __declspec(dllexport) bool initialize()
 
     // Initialize particles
     particle_system = new particle::mcallister_system(
+        // The source
         new particle::flow(50.0,
-                           {new particle::position<particle::point>(XMFLOAT3(0.0f, -1.5f, 0.0f)),
-                            new particle::size<particle::random>({0.1f, 1.f}),
-                            //new particle::age<particle::constant>(1.f),
-                            new particle::age<particle::random>({0.f, 5.f}),
-                            new particle::velocity<particle::cylinder>({XMVectorSet(0.f, 1.f, 0.f, 0.f),
-                                                                        XMVectorSet(0.f, 2.f, 0.f, 0.f),
-                                                                        0.1f, 0.2f})}),
+                           {
+                               // List of initializers
+                               new particle::position<particle::point>(XMFLOAT4(0.0f, -1.5f, 0.0f, 0.f)),
+                               new particle::size<particle::constant>(1.f),
+                               new particle::age<particle::constant>(1.f),
+                               new particle::velocity<particle::point>(XMFLOAT4(0.f, 0.f, 0.f, 0.f))
+                               //new particle::size<particle::random>({0.1f, 1.f}),
+                               //new particle::age<particle::random>({0.f, 5.f}),
+                               //new particle::velocity<particle::cylinder>({XMVectorSet(0.f, 1.f, 0.f, 0.f),
+                               //                                            XMVectorSet(0.f, 2.f, 0.f, 0.f),
+                               //                                            0.1f, 0.2f})
+                           }),
         {
+            // List of actions
             new particle::move()
             //new particle::gravity(XMVectorSet(0.f, 0.f, -1.8f, 0.f))
         },
@@ -140,9 +161,43 @@ extern "C" __declspec(dllexport) bool initialize()
     // Initialize GPU timer
     query = new gpu_query(device, main_cmdlist, cmd_queue, &dr->backbuffer_index, NUM_QUERIES);
 
+    // Create the floor grid data
+    mesh_data grid = create_grid(5.f, 5.f, 20, 20, "floor_grid");
+    create_mesh_data(device, main_cmdlist, "floor_grid",
+                     sizeof(position_color), grid.vertices.size(), grid.vertices.data(),
+                     sizeof(WORD), grid.indices.size(), grid.indices.data(),
+                     &floor_grid);
+
+    // Create the particle buffers
+    size_t particle_buffer_size = particle_system->m_max_particles_per_frame * particle::particle_byte_size;
+
+    particle_data = new std::array<particle::aligned_particle_aos, particle_system->m_max_particles_per_frame>();
+    for (int i = 0; i < particle_system->m_max_particles_per_frame; i++)
+    {
+        particle_data->at(i) = {};
+        particle_data->at(i).position = {random_float(0.f, 1.f),
+                                         random_float(0.f, 1.f),
+                                         random_float(0.f, 1.f),
+                                         1.f};
+        particle_data->at(i).size = 1.f;
+    }
+
+    create_default_buffer(device, main_cmdlist, particle_data->data(), particle_buffer_size,
+                          &particle_output_upload, &particle_output_default, "particle_output_data", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+
+    create_default_buffer(device, main_cmdlist, particle_data->data(), particle_buffer_size,
+                          &particle_input_upload, &particle_input_default, "particle_input_data", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+
+    create_default_buffer(device, main_cmdlist, particle_data->data(), particle_buffer_size,
+                          &particle_reset_upload, &particle_reset_default, "particle_reset_data", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+
     main_cmdlist->Close();
     cmd_queue->ExecuteCommandLists(1, (ID3D12CommandList *const *)&main_cmdlist);
     dr->flush_cmd_queue();
+
+    safe_release(particle_input_upload);
+    safe_release(particle_output_upload);
+    safe_release(particle_reset_upload);
 
     return true;
 }
@@ -156,14 +211,18 @@ extern "C" __declspec(dllexport) bool update_and_render()
 
     imgui_update();
 
-    // Update pass data
+    // Update camera
     update_camera_pos();
     cam.update_view();
 
+    // Update pass data
     XMStoreFloat3(&cb_pass.eye_pos, cam.position);
     XMStoreFloat4x4(&cb_pass.view, cam.view);
     XMStoreFloat4x4(&cb_pass.proj, XMMatrixTranspose(cam.proj));
     cb_pass.time = (float)timer.total_time;
+    cb_pass.delta_time = dt;
+    cb_pass.aspect_ratio = g_aspect_ratio;
+    cb_pass.vert_cotangent = cam.proj.r[1].m128_f32[1];
 
     // Update material data
     float &tex_u = cb_material.transform(3, 0);
@@ -190,12 +249,9 @@ extern "C" __declspec(dllexport) bool update_and_render()
         should_reset_particles = false;
     }
 
-    particle::particle current_particle = reinterpret_cast<particle::particle>(frame->particle_vb_range);
-
+    // Update particles
     timer.start(cpu_particle_sim);
-    auto [current_particle_start, current_particle_end] = particle_system->simulate(
-        dt,
-        current_particle);
+    particle_system->simulate(dt, frame);
     timer.stop(cpu_particle_sim);
 
     timer.start(cpu_wait_time);
@@ -203,12 +259,12 @@ extern "C" __declspec(dllexport) bool update_and_render()
     {
         dr->wait_present();
     }
+
     UINT backbuffer_index = dr->swapchain->GetCurrentBackBufferIndex(); // gets updated after each call to Present()
     dr->backbuffer_index = backbuffer_index;
 
     frame = frame_resources[backbuffer_index];
     dr->cpu_wait(frame->fence_value);
-
     cmd_alloc = frame->cmd_alloc;
     timer.stop(cpu_wait_time);
 
@@ -220,10 +276,10 @@ extern "C" __declspec(dllexport) bool update_and_render()
 
     frame->cb_pass_upload->copy_data(0, (void *)&cb_pass);
 
-    material_data cpy = {};
-    XMStoreFloat4x4(&cpy.transform, XMMatrixTranspose(tex_transform));
-    XMStoreFloat4x4(&cpy.inv_transform, XMMatrixTranspose(inv_tex_transform));
-    frame->cb_material_upload->copy_data(0, (void *)&cpy);
+    material_data transposed_mat = {};
+    XMStoreFloat4x4(&transposed_mat.transform, XMMatrixTranspose(tex_transform));
+    XMStoreFloat4x4(&transposed_mat.inv_transform, XMMatrixTranspose(inv_tex_transform));
+    frame->cb_material_upload->copy_data(0, (void *)&transposed_mat);
 
     query->start(gpu_frame_time_query);
 
@@ -244,70 +300,87 @@ extern "C" __declspec(dllexport) bool update_and_render()
     main_cmdlist->SetGraphicsRootSignature(dr->rootsig);
     main_cmdlist->SetGraphicsRootConstantBufferView(0, frame->cb_pass_upload->m_uploadbuffer->GetGPUVirtualAddress());
 
+    // Draw floor grid
+    main_cmdlist->IASetVertexBuffers(0, 1, &floor_grid.resource->vbv);
+    main_cmdlist->IASetIndexBuffer(&floor_grid.resource->ibv);
+    main_cmdlist->SetPipelineState(floorgrid_pso);
+    main_cmdlist->IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_LINELIST);
+    main_cmdlist->DrawIndexedInstanced(floor_grid.index_count, 1, 0, 0, 0);
+
     query->start(gpu_particles_time_query);
 
-    UINT num_vertices = UINT(current_particle_end - current_particle_start);
-    if (num_vertices > 0)
+    if (particle_system->m_simulation_mode == particle::simulation_mode::gpu)
     {
-        // Configure VBVs from particle pointers
-        size_t particle_gpu_data_start = particle_system->m_vertex_upload_resource->m_uploadbuffer->GetGPUVirtualAddress();
-        UINT particle_vb_size = (UINT)particle_system->m_vertexbuffer_stride;
-        UINT particle_vb_stride = (UINT)particle::byte_size;
-        BYTE *particle_cpu_data_start = particle_system->m_vertex_upload_resource->m_mapped_data;
+        // Simulate particles
+        query->start(gpu_particles_sim_query);
+        main_cmdlist->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+                                             particle_output_default,
+                                             D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
+                                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
 
-        D3D12_VERTEX_BUFFER_VIEW vbv[4] = {};
+        main_cmdlist->SetComputeRootSignature(dr->rootsig);
+        main_cmdlist->SetComputeRootConstantBufferView(0, frame->cb_pass_upload->m_uploadbuffer->GetGPUVirtualAddress());
+        main_cmdlist->SetPipelineState(particle_sim_pso);
 
-        // Position data
-        size_t position_offset = (BYTE *)&current_particle_start->position - particle_cpu_data_start;
-
-        vbv[0].BufferLocation = particle_gpu_data_start + position_offset;
-        vbv[0].SizeInBytes = particle_vb_size - offsetof(particle::aligned_particle_aos, position);
-        vbv[0].StrideInBytes = particle_vb_stride;
-
-        // Size data
-        size_t size_offset = (BYTE *)&current_particle_start->size - particle_cpu_data_start;
-
-        vbv[1].BufferLocation = particle_gpu_data_start + size_offset;
-        vbv[1].SizeInBytes = particle_vb_size - offsetof(particle::aligned_particle_aos, size);
-        vbv[1].StrideInBytes = particle_vb_stride;
-
-        // Velocity data
-        size_t velocity_offset = (BYTE *)&current_particle_start->velocity - particle_cpu_data_start;
-
-        vbv[2].BufferLocation = particle_gpu_data_start + velocity_offset;
-        vbv[2].SizeInBytes = particle_vb_size - offsetof(particle::aligned_particle_aos, velocity);
-        vbv[2].StrideInBytes = particle_vb_stride;
-
-        // Age data
-        size_t age_offset = (BYTE *)&current_particle_start->age - particle_cpu_data_start;
-
-        vbv[3].BufferLocation = particle_gpu_data_start + age_offset;
-        vbv[3].SizeInBytes = particle_vb_size - offsetof(particle::aligned_particle_aos, age);
-        vbv[3].StrideInBytes = particle_vb_stride;
+        main_cmdlist->SetComputeRootUnorderedAccessView(2, particle_output_default->GetGPUVirtualAddress());
+        main_cmdlist->SetComputeRootUnorderedAccessView(3, particle_reset_default->GetGPUVirtualAddress());
+        main_cmdlist->SetComputeRootUnorderedAccessView(4, particle_input_default->GetGPUVirtualAddress());
+        main_cmdlist->Dispatch(200, 1, 1);
+        query->stop(gpu_particles_sim_query);
 
         // Draw particles
-        main_cmdlist->SetDescriptorHeaps(1, &srv_heap);
-        main_cmdlist->IASetVertexBuffers(0, _countof(vbv), vbv);
+        query->start(gpu_particles_draw_query);
+        main_cmdlist->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+                                             particle_output_default,
+                                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                             D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER));
+
+        D3D12_VERTEX_BUFFER_VIEW vbv = {};
+        vbv.BufferLocation = particle_output_default->GetGPUVirtualAddress();
+        vbv.SizeInBytes = particle_system->m_max_particles_per_frame * particle::particle_byte_size;
+        vbv.StrideInBytes = particle::particle_byte_size;
+        main_cmdlist->IASetVertexBuffers(0, 1, &vbv);
         main_cmdlist->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
-        main_cmdlist->SetGraphicsRootDescriptorTable(1, srv_heap->GetGPUDescriptorHandleForHeapStart());
+        main_cmdlist->SetPipelineState(point_pso);
+        main_cmdlist->DrawInstanced(particle_system->m_max_particles_per_frame, 1, 0, 0);
 
-        switch (rendering_mode)
+        // Swap read and write buffers
+        // this makes the pipeline use our previously transformed particles to draw
+        // while the compute pipeline is simulating the next batch of particles
+        particle_input_default = particle_reset_default;
+
+        query->stop(gpu_particles_draw_query);
+    }
+
+    if (particle_system->m_simulation_mode == particle::simulation_mode::cpu)
+    {
+        UINT num_vertices = particle_system->m_num_particles_to_render;
+        if (num_vertices > 0)
         {
-        case particle_rendering_mode::point:
-            main_cmdlist->SetPipelineState(point_pso);
-            break;
+            // Draw particles
+            main_cmdlist->SetDescriptorHeaps(1, &srv_heap);
+            main_cmdlist->IASetVertexBuffers(0, (UINT)particle_system->m_VBVs.size(), particle_system->m_VBVs.data());
+            main_cmdlist->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
+            main_cmdlist->SetGraphicsRootDescriptorTable(1, srv_heap->GetGPUDescriptorHandleForHeapStart());
 
-        case particle_rendering_mode::billboard:
-            main_cmdlist->SetPipelineState(billboard_pso);
-            break;
+            switch (particle_system->m_rendering_mode)
+            {
+            case particle::rendering_mode::point:
+                main_cmdlist->SetPipelineState(point_pso);
+                break;
 
-        case particle_rendering_mode::overdraw:
-            // Not yet implemented. Fallback to billboards
-            main_cmdlist->SetPipelineState(billboard_pso);
-            break;
+            case particle::rendering_mode::billboard:
+                main_cmdlist->SetPipelineState(billboard_pso);
+                break;
+
+            case particle::rendering_mode::overdraw:
+                // Not yet implemented. Fallback to billboards
+                main_cmdlist->SetPipelineState(billboard_pso);
+                break;
+            }
+
+            main_cmdlist->DrawInstanced(num_vertices, 1, 0, 0);
         }
-
-        main_cmdlist->DrawInstanced(num_vertices, 1, 0, 0);
     }
 
     query->stop(gpu_particles_time_query);
@@ -342,25 +415,32 @@ void imgui_update()
 {
     imgui_new_frame();
     ImGui::ShowDemoWindow(&show_demo);
+
     imgui_app_combo();
+
     imgui_mouse_pos();
     imgui_gpu_memory(dr->adapter);
 
     ImGui::Checkbox("VSync", &is_vsync);
     ImGui::Checkbox("Wait for Present()", &is_waiting_present);
 
-    ImGui::Text("GPU ImGui time: %f ms", query->result(gpu_imgui_time_query));
-    ImGui::Text("GPU frame time: %f ms", query->result(gpu_frame_time_query));
-    ImGui::Text("GPU particles time: %f ms", query->result(gpu_particles_time_query));
     ImGui::Text("CPU frame time: %f ms", timer.frame_time_ms);
     ImGui::Text("CPU frame cycles: %d cycles", timer.cycles_per_frame);
-    ImGui::Text("CPU particle sim: %f ms", timer.result_ms(cpu_particle_sim));
     ImGui::Text("CPU wait time: %f ms", timer.result_ms(cpu_wait_time));
     ImGui::Text("CPU rest of frame time: %f ms", timer.result_ms(cpu_rest_of_frame));
     ImGui::Text("Total frame count: %d", timer.total_frame_count);
     ImGui::Text("FPS: %d", timer.fps);
+    ImGui::Text("GPU ImGui time: %f ms", query->result(gpu_imgui_time_query));
+    ImGui::Text("GPU frame time: %f ms", query->result(gpu_frame_time_query));
 
     ImGui::Separator();
+
+    ImGui::Text("GPU particles time: %f ms", query->result(gpu_particles_time_query));
+    ImGui::Text("GPU particles simulation time: %f ms", query->result(gpu_particles_sim_query));
+    ImGui::Text("GPU particles draw time: %f ms", query->result(gpu_particles_draw_query));
+    ImGui::Text("CPU particle sim: %f ms", timer.result_ms(cpu_particle_sim));
+
+    ImGui::Spacing();
 
     ImGui::Text("Particles alive: %d / %d", particle_system->m_num_particles_alive, particle_system->m_max_particles_per_frame);
     ImGui::Text("Particles total: %d", particle_system->m_num_particles_total);
@@ -368,38 +448,8 @@ void imgui_update()
     if (ImGui::Button("Reset particle system"))
         should_reset_particles = true;
 
-    imgui_particle_mode_combo((int *)&rendering_mode);
-}
-
-void imgui_particle_mode_combo(int *mode)
-{
-    const char *mode_str[] = {"Point",
-                              "Billboard",
-                              "Overdraw"};
-
-    const char *current_mode = mode_str[*mode];
-    if (ImGui::BeginCombo("Particle rendering mode", current_mode))
-    {
-        for (int i = 0; i < _countof(mode_str); ++i)
-        {
-            bool is_selected = (current_mode == mode_str[i]);
-            if (ImGui::Selectable(mode_str[i], is_selected))
-            {
-                current_mode = mode_str[i];
-                *mode = i;
-                if (!is_selected)
-                {
-                    // on changed side-effect
-                }
-            }
-
-            if (is_selected)
-            {
-                ImGui::SetItemDefaultFocus();
-            }
-        }
-        ImGui::EndCombo();
-    }
+    imgui_combobox((int *)&particle_system->m_rendering_mode, {"Point", "Billboard", "Overdraw"}, "Particle rendering mode");
+    imgui_combobox((int *)&particle_system->m_simulation_mode, {"CPU", "GPU"}, "Particle simulation mode");
 }
 
 void update_camera_pos()
@@ -434,19 +484,30 @@ void update_camera_pos()
 
 void create_shader_objects()
 {
+    // Billboards shaders
     compile_shader(L"..\\..\\particles\\shaders\\billboards.hlsl", L"VS", shader_type::vertex, &billboard_blob_vs);
     compile_shader(L"..\\..\\particles\\shaders\\billboards.hlsl", L"PS", shader_type::pixel, &billboard_blob_ps);
     compile_shader(L"..\\..\\particles\\shaders\\billboards.hlsl", L"GS", shader_type::geometry, &billboard_blob_gs);
 
+    // Points shaders
     compile_shader(L"..\\..\\particles\\shaders\\points.hlsl", L"VS", shader_type::vertex, &points_blob_vs);
     compile_shader(L"..\\..\\particles\\shaders\\points.hlsl", L"PS", shader_type::pixel, &points_blob_ps);
 
+    // GPU particle simulation compute shader
+    compile_shader(L"..\\..\\particles\\shaders\\particle_sim.hlsl", L"CS", shader_type::compute, &particle_sim_blob_cs);
+    compile_shader(L"..\\..\\particles\\shaders\\particle_sim.hlsl", L"VS", shader_type::vertex, &particle_sim_blob_vs);
+    compile_shader(L"..\\..\\particles\\shaders\\particle_sim.hlsl", L"PS", shader_type::pixel, &particle_sim_blob_ps);
+
+    // Floor grid shaders
+    compile_shader(L"..\\..\\particles\\shaders\\floorgrid.hlsl", L"VS", shader_type::vertex, &floorgrid_blob_vs);
+    compile_shader(L"..\\..\\particles\\shaders\\floorgrid.hlsl", L"PS", shader_type::pixel, &floorgrid_blob_ps);
+
     std::vector<CD3DX12_ROOT_PARAMETER1> params = {};
 
-    // (root) ConstantBuffer<view_proj> cb_viewproj : register(b0);
-    CD3DX12_ROOT_PARAMETER1 param_viewproj;
-    param_viewproj.InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_ALL);
-    params.push_back(param_viewproj);
+    // (root) ConstantBuffer<pass_data> cb_pass : register(b0);
+    CD3DX12_ROOT_PARAMETER1 param_pass;
+    param_pass.InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_ALL);
+    params.push_back(param_pass);
 
     // (table) Texture2D srv_fire_texture : register(t0);
     CD3DX12_DESCRIPTOR_RANGE1 mat_ranges[2];
@@ -455,6 +516,21 @@ void create_shader_objects()
     CD3DX12_ROOT_PARAMETER1 param_mat;
     param_mat.InitAsDescriptorTable(_countof(mat_ranges), mat_ranges, D3D12_SHADER_VISIBILITY_ALL);
     params.push_back(param_mat);
+
+    // (root) RWStructuredBuffer<particle> : register(u0);
+    CD3DX12_ROOT_PARAMETER1 param_output_particle = {};
+    param_output_particle.InitAsUnorderedAccessView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE, D3D12_SHADER_VISIBILITY_ALL);
+    params.push_back(param_output_particle);
+
+    // (root) RWStructuredBuffer<particle> : register(u1);
+    CD3DX12_ROOT_PARAMETER1 param_reset_particle = {};
+    param_reset_particle.InitAsUnorderedAccessView(1, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE, D3D12_SHADER_VISIBILITY_ALL);
+    params.push_back(param_reset_particle);
+
+    // (root) RWStructuredBuffer<particle> : register(u2);
+    CD3DX12_ROOT_PARAMETER1 param_input_particle = {};
+    param_input_particle.InitAsUnorderedAccessView(2, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE, D3D12_SHADER_VISIBILITY_ALL);
+    params.push_back(param_input_particle);
 
     // Samplers
     std::vector<CD3DX12_STATIC_SAMPLER_DESC> samplers = {};
@@ -467,21 +543,25 @@ void create_shader_objects()
 
     dr->create_rootsig(&params, &samplers);
 
-    std::vector<D3D12_INPUT_ELEMENT_DESC> input_elem_descs;
-    input_elem_descs.push_back({"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
-    input_elem_descs.push_back({"SIZE", 0, DXGI_FORMAT_R32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
-    input_elem_descs.push_back({"VELOCITY", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
-    input_elem_descs.push_back({"AGE", 0, DXGI_FORMAT_R32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
+    std::vector<D3D12_INPUT_ELEMENT_DESC> particle_input_elem_desc;
+    particle_input_elem_desc.push_back({"POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
+    particle_input_elem_desc.push_back({"SIZE", 0, DXGI_FORMAT_R32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
+    particle_input_elem_desc.push_back({"VELOCITY", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
+    particle_input_elem_desc.push_back({"AGE", 0, DXGI_FORMAT_R32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
+
+    std::vector<D3D12_INPUT_ELEMENT_DESC> mesh_input_elem_desc;
+    mesh_input_elem_desc.push_back({"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
+    mesh_input_elem_desc.push_back({"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
 
     //
-    // Alpha transparency blending
+    // Alpha transparency blending (blend)
     //
     D3D12_RENDER_TARGET_BLEND_DESC transparent_rtv_blend_desc = {};
     transparent_rtv_blend_desc.BlendEnable = true;
     transparent_rtv_blend_desc.LogicOpEnable = false;
     transparent_rtv_blend_desc.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 
-    // Enable alpha controlled transparency
+    // Enable conventional alpha blending
     // C = (C_src * C_src_alpha) + (C_dst * (1 - C_src_alpha))
     transparent_rtv_blend_desc.BlendOp = D3D12_BLEND_OP_ADD;
     transparent_rtv_blend_desc.SrcBlend = D3D12_BLEND_SRC_ALPHA;
@@ -511,8 +591,22 @@ void create_shader_objects()
     D3D12_BLEND_DESC additive_blend_desc = transparency_blend_desc;
     additive_blend_desc.RenderTarget[0] = additive_rtv_blend_desc;
 
+    //
+    // Blend-Add
+    //
+    D3D12_RENDER_TARGET_BLEND_DESC blendadd_rtv_blend_desc = transparent_rtv_blend_desc;
+
+    // Enable mixture of conventional alpha blending and additive blending
+    // C = (C_src * (1,1,1,1)) + (C_dst * (1 - C_src_alpha))
+    blendadd_rtv_blend_desc.BlendOp = D3D12_BLEND_OP_ADD;
+    blendadd_rtv_blend_desc.SrcBlend = D3D12_BLEND_ONE;
+    blendadd_rtv_blend_desc.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+
+    // Default particle PSO
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC default_particle_pso_desc = dr->create_default_pso_desc(&particle_input_elem_desc);
+
     // Billboard PSO
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC billboard_pso_desc = dr->create_default_pso_desc(&input_elem_descs);
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC billboard_pso_desc = default_particle_pso_desc;
 
     // Disable depth writes, but still allow for depth testing
     billboard_pso_desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
@@ -527,13 +621,37 @@ void create_shader_objects()
     NAME_D3D12_OBJECT(billboard_pso);
 
     // Point PSO
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC point_pso_desc = dr->create_default_pso_desc(&input_elem_descs);
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC point_pso_desc = default_particle_pso_desc;
     point_pso_desc.VS = {points_blob_vs->GetBufferPointer(), points_blob_vs->GetBufferSize()};
     point_pso_desc.PS = {points_blob_ps->GetBufferPointer(), points_blob_ps->GetBufferSize()};
     point_pso_desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     point_pso_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
     check_hr(device->CreateGraphicsPipelineState(&point_pso_desc, IID_PPV_ARGS(&point_pso)));
     NAME_D3D12_OBJECT(point_pso);
+
+    // Point PSO (no projection)
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC noproj_point_pso_desc = point_pso_desc;
+    noproj_point_pso_desc.VS = {particle_sim_blob_vs->GetBufferPointer(), particle_sim_blob_vs->GetBufferSize()};
+    noproj_point_pso_desc.PS = {particle_sim_blob_ps->GetBufferPointer(), particle_sim_blob_ps->GetBufferSize()};
+    check_hr(device->CreateGraphicsPipelineState(&noproj_point_pso_desc, IID_PPV_ARGS(&noproj_point_pso)));
+    NAME_D3D12_OBJECT(noproj_point_pso);
+
+    // Floor grid PSO
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC floorgrid_pso_desc = dr->create_default_pso_desc(&mesh_input_elem_desc);
+    floorgrid_pso_desc.PS = {floorgrid_blob_ps->GetBufferPointer(), floorgrid_blob_ps->GetBufferSize()};
+    floorgrid_pso_desc.VS = {floorgrid_blob_vs->GetBufferPointer(), floorgrid_blob_vs->GetBufferSize()};
+    floorgrid_pso_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+    check_hr(device->CreateGraphicsPipelineState(&floorgrid_pso_desc, IID_PPV_ARGS(&floorgrid_pso)));
+    NAME_D3D12_OBJECT(floorgrid_pso);
+
+    // Compute PSO
+    D3D12_COMPUTE_PIPELINE_STATE_DESC particle_sim_pso_desc = {};
+    particle_sim_pso_desc.CS = {particle_sim_blob_cs->GetBufferPointer(), particle_sim_blob_cs->GetBufferSize()};
+    particle_sim_pso_desc.pRootSignature = dr->rootsig;
+    particle_sim_pso_desc.NodeMask = DEFAULT_NODE;
+    particle_sim_pso_desc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
+    check_hr(device->CreateComputePipelineState(&particle_sim_pso_desc, IID_PPV_ARGS(&particle_sim_pso)));
+    NAME_D3D12_OBJECT(particle_sim_pso);
 }
 
 void create_texture_objects()
@@ -555,11 +673,11 @@ void create_texture_objects()
 
     // Copy the texture data into the upload heap
     // Copy to the content of the upload heap into the default heap
-    auto rreq_size = UpdateSubresources(main_cmdlist,
-                                        fire_texture_default_resource,
-                                        fire_texture_upload_resource,
-                                        0, 0,
-                                        (UINT)subresource_data.size(), subresource_data.data());
+    UpdateSubresources(main_cmdlist,
+                       fire_texture_default_resource,
+                       fire_texture_upload_resource,
+                       0, 0,
+                       (UINT)subresource_data.size(), subresource_data.data());
 
     NAME_D3D12_OBJECT(fire_texture_default_resource);
     NAME_D3D12_OBJECT(fire_texture_upload_resource);
@@ -593,7 +711,7 @@ void create_texture_objects()
     // Create the fire texture transform's CBV
     D3D12_CONSTANT_BUFFER_VIEW_DESC tex_transform_cbv_desc = {};
     tex_transform_cbv_desc.BufferLocation = frame->cb_material_upload->m_uploadbuffer->GetGPUVirtualAddress();
-    tex_transform_cbv_desc.SizeInBytes = frame->cb_material_upload->m_buffer_size;
+    tex_transform_cbv_desc.SizeInBytes = (UINT)frame->cb_material_upload->m_buffer_size;
 
     // Place it in the heap directly after the fire texture SRV
     D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle = {};
@@ -608,6 +726,7 @@ extern "C" __declspec(dllexport) void resize(int width, int height)
     dr->wait_last_frame();
     ImGui_ImplDX12_InvalidateDeviceObjects();
     dr->resize(width, height);
+    cam.update_projection();
     ImGui_ImplDX12_CreateDeviceObjects();
 }
 
@@ -617,6 +736,9 @@ extern "C" __declspec(dllexport) void cleanup()
     delete particle_system;
     delete query;
     safe_release(srv_heap);
+    safe_release(particle_sim_pso);
+    safe_release(particle_input_default);
+    safe_release(particle_output_default);
     safe_release(billboard_pso);
     safe_release(point_pso);
     safe_release(main_cmdlist);

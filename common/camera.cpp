@@ -3,9 +3,11 @@
 
 using namespace DirectX;
 
-camera::camera(float aspect_ratio, float fov_angle, DirectX::FXMVECTOR position) : m_start_pos(position), position(position)
+camera::camera(float fov_angle, DirectX::FXMVECTOR position) : m_start_pos(position), position(position), m_fov_angle(fov_angle)
 {
-    proj = XMMatrixPerspectiveFovLH(fov_angle, aspect_ratio, 1.0f, 1000.0f);
+    if (g_aspect_ratio > 0.f)
+        proj = XMMatrixPerspectiveFovLH(fov_angle, g_aspect_ratio, 1.0f, 1000.0f);
+
     m_start_pos = position;
 
     right = DirectX::XMVectorSet(1.f, 0.f, 0.f, 0.f);
@@ -42,6 +44,11 @@ void camera::update_view()
     T.r[3] = XMVectorSet(0.f, 0.f, 0.f, 1.f);
 
     view = T;
+}
+
+void camera::update_projection()
+{
+    proj = XMMatrixPerspectiveFovLH(m_fov_angle, g_aspect_ratio, 1.0f, 1000.0f);
 }
 
 void camera::update_yaw_pitch(XMFLOAT2 current_mouse_pos, XMFLOAT2 last_mouse_pos)
