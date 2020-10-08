@@ -17,7 +17,6 @@ struct material_data
 {
     DirectX::XMFLOAT4X4 transform = Identity4x4();
     DirectX::XMFLOAT4X4 inv_transform = Identity4x4();
-    float vert_cotangent = 0.f;
 };
 
 class frame_cmd

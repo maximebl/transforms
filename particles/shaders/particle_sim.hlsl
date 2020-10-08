@@ -3,28 +3,24 @@
 // input layout
 struct vertex_in
 {
-    float4 position : POSITION;
+    float3 position : POSITION;
     float size : SIZE;
-    float4 velocity : VELOCITY;
+    float3 velocity : VELOCITY;
     float age : AGE;
 };
 
 struct particle
 {
-    float4 position;
+    float3 position;
     float size;
-    float4 velocity;
+    float3 velocity;
     float age;
 };
 RWStructuredBuffer<particle> output_particle : register(u0);
-RWStructuredBuffer<particle> reset_particle : register(u1);
-RWStructuredBuffer<particle> input_particle : register(u2);
+RWStructuredBuffer<particle> input_particle : register(u1);
 
-[numthreads(1024, 1, 1)] // Threads per thread group
-void CS(uint3 thread_id : SV_DispatchThreadID,
-uint3 group_thread_id : SV_GroupThreadID,
-uint group_index : SV_GroupIndex,
-uint3 group_id : SV_GroupID)
+[numthreads(1024, 1, 1)]
+void CS(uint3 thread_id : SV_DispatchThreadID)
 {
     int index = thread_id.x;
 
@@ -44,6 +40,7 @@ uint3 group_id : SV_GroupID)
     float width = height * cb_pass.aspect_ratio;
     float3 extent = abs(hpos.xyz) - float3(width, height, 0);
 
+    // Frustum cull by checking of any of xyz are outside [-w, w].
     float unknown = max(max(0.f, extent.x), max(extent.y, extent.z));
     if (unknown > hpos.w)
         return;
@@ -51,41 +48,15 @@ uint3 group_id : SV_GroupID)
     // Run actions on the original particle before the transform to homogenous clip space
     float dt = cb_pass.delta_time;
 
+    // Size
+    p.size = 1.f;
+
     // Gravity
-    p.velocity += float4(0.f, 0.01f, 0.f, 1.f) * dt;
+    p.velocity += float3(0.f, 0.0f, 0.f) * dt;
 
     // Move
     p.position += p.velocity * dt;
 
-    // Keep the view space particle with the actions applied to it
-    reset_particle[index] = p;
-
     // Output the particle with the actions applied to it, in homogeneous clip space
-    p.position = mul(float4(p.position.xyz, 1.f), view_proj);
     output_particle[index] = p;
-}
-
-// Point rendering without projection
-struct vertex_out
-{
-    float4 hpos : SV_Position;
-};
-
-struct pixel_out
-{
-    float4 color : SV_Target;
-};
-
-vertex_out VS(vertex_in vs_in)
-{
-    vertex_out ps_in;
-    ps_in.hpos = vs_in.position;
-    return ps_in;
-}
-
-pixel_out PS(vertex_out ps_in)
-{
-    pixel_out ps_out;
-    ps_out.color = float4(1.f, 0.f, 0.f, 1.f);
-    return ps_out;
 }

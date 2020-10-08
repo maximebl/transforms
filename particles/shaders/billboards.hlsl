@@ -13,9 +13,9 @@ SamplerState linear_wrap : register(s0);
 // input layout
 struct vertex_in
 {
-    float4 position : POSITION;
+    float3 position : POSITION;
     float size : SIZE;
-    float4 velocity : VELOCITY;
+    float3 velocity : VELOCITY;
     float age : AGE;
 };
 
@@ -41,7 +41,7 @@ struct pixel_out
 vertex_out VS(uint vertex_id : SV_VertexID, vertex_in vs_in)
 {
     vertex_out gs_in;
-    gs_in.pos = vs_in.position.xyz;
+    gs_in.pos = vs_in.position;
     gs_in.size = vs_in.size;
     return gs_in;
 }
@@ -131,6 +131,10 @@ void GS(point vertex_out gs_in[1], inout TriangleStream<geo_out> stream)
 
 pixel_out PS(geo_out ps_in)
 {
+    pixel_out ps_o; 
+    ps_o.color = float4(1.f,0.f,0.f,1.f);
+    return ps_o;
+
     float2 offset = float2(0.5f, 0.5f);
     float tex_scale_factor = 0.5f;
     // Center the texture coordinates and scale them by a texture scale factor

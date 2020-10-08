@@ -92,7 +92,7 @@ device_resources::device_resources() : last_signaled_fence_value(0)
 
         for (UINT i = 0; i < NUM_BACK_BUFFERS; i++)
         {
-            rtv_descriptors[i] = rtv_handle;
+            rtv_descriptor_handles[i] = rtv_handle;
             rtv_handle.ptr += rtv_handle_incr_size;
         }
     }
@@ -164,7 +164,7 @@ void device_resources::create_rendertargets()
     {
         ID3D12Resource *back_buffer = NULL;
         check_hr(swapchain->GetBuffer(i, IID_PPV_ARGS(&back_buffer)));
-        device->CreateRenderTargetView(back_buffer, NULL, rtv_descriptors[i]);
+        device->CreateRenderTargetView(back_buffer, NULL, rtv_descriptor_handles[i]);
         back_buffers[i] = back_buffer;
 
         NAME_D3D12_OBJECT_INDEXED(back_buffer, i);

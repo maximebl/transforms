@@ -157,7 +157,7 @@ public:
     DXGI_FORMAT rtv_format = DXGI_FORMAT_R8G8B8A8_UNORM;
     UINT swapchain_flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT | DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
 
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv_descriptors[NUM_BACK_BUFFERS];
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv_descriptor_handles[NUM_BACK_BUFFERS];
     ID3D12Resource *back_buffers[NUM_BACK_BUFFERS];
     UINT srv_desc_handle_incr_size = 0;
     UINT rtv_handle_incr_size = 0;

@@ -57,5 +57,6 @@
     <FxCompile Include="shaders\common.hlsl" />
     <FxCompile Include="shaders\particle_sim.hlsl" />
     <FxCompile Include="shaders\floorgrid.hlsl" />
+    <FxCompile Include="shaders\commands_filter.hlsl" />
   </ItemGroup>
 </Project>

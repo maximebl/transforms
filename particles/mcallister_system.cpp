@@ -29,8 +29,8 @@ void mcallister_system::reset(particle ptr)
 {
     ptr->age = 0.f;
     ptr->size = 1.f;
-    ptr->position = XMFLOAT4(0.f, 0.f, 0.f, 0.f);
-    ptr->velocity = XMFLOAT4(0.f, 0.f, 0.f, 0.f);
+    ptr->position = XMFLOAT3(0.f, 0.f, 0.f);
+    ptr->velocity = XMFLOAT3(0.f, 0.f, 0.f);
     m_num_particles_alive = 0;
 }
 
@@ -157,12 +157,12 @@ particle flow::apply(float dt, particle begin, particle end)
 }
 
 // Initializers
-point::point(XMFLOAT4 v)
+point::point(XMFLOAT3 v)
 {
     m_point = v;
 }
 
-void point::emit(XMFLOAT4 &v)
+void point::emit(XMFLOAT3 &v)
 {
     v = m_point;
 }
@@ -210,7 +210,7 @@ cylinder::cylinder(XMVECTOR const &pt1, XMVECTOR const &pt2, float rd1, float rd
     m_v = XMVector3Cross(norm_p2, m_u);
 }
 
-void cylinder::emit(XMFLOAT4 &v)
+void cylinder::emit(XMFLOAT3 &v)
 {
     // Random number between 0 and 2PI
     float rand_float = random_float(0.f, XM_2PI);
@@ -225,18 +225,18 @@ void cylinder::emit(XMFLOAT4 &v)
     float rand_float2 = random_float(0.f, 1.f);
     XMVECTOR random_point = m_p1 + (m_p2 * rand_float2);
     random_point = random_point + XMVectorScale(m_u, XMVectorGetX(scaled_circle_pos)) + XMVectorScale(m_v, XMVectorGetY(scaled_circle_pos));
-    XMStoreFloat4(&v, random_point);
+    XMStoreFloat3(&v, random_point);
 }
 
 // Actions
 void move::apply(float dt, particle particle)
 {
     XMVECTOR vdt = XMVectorSet(dt, dt, dt, dt);
-    XMVECTOR pos = XMLoadFloat4(&particle->position);
-    XMVECTOR vel = XMLoadFloat4(&particle->velocity);
+    XMVECTOR pos = XMLoadFloat3(&particle->position);
+    XMVECTOR vel = XMLoadFloat3(&particle->velocity);
     pos = XMVectorMultiplyAdd(vel, vdt, pos);
     particle->age += dt;
-    XMStoreFloat4(&particle->position, pos);
+    XMStoreFloat3(&particle->position, pos);
 }
 
 gravity::gravity(XMVECTOR const &v)
@@ -247,9 +247,9 @@ gravity::gravity(XMVECTOR const &v)
 void gravity::apply(float dt, particle particle)
 {
     XMVECTOR vdt = XMVectorSet(dt, dt, dt, dt);
-    XMVECTOR vel = XMLoadFloat4(&particle->velocity);
+    XMVECTOR vel = XMLoadFloat3(&particle->velocity);
     vel = XMVectorMultiplyAdd(m_g, vdt, vel);
-    XMStoreFloat4(&particle->velocity, vel);
+    XMStoreFloat3(&particle->velocity, vel);
 }
 
 } // namespace particle

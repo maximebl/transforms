@@ -1064,8 +1064,8 @@ extern "C" __declspec(dllexport) bool update_and_render()
 
     set_viewport_rects(cmdlist);
     cmdlist->ClearDepthStencilView(dr->dsv_heap->GetCPUDescriptorHandleForHeapStart(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.f, 0, 0, NULL);
-    cmdlist->ClearRenderTargetView(dr->rtv_descriptors[backbuffer_index], bg_color, 0, NULL);
-    cmdlist->OMSetRenderTargets(1, &dr->rtv_descriptors[backbuffer_index], FALSE, &dr->dsv_heap->GetCPUDescriptorHandleForHeapStart());
+    cmdlist->ClearRenderTargetView(dr->rtv_descriptor_handles[backbuffer_index], bg_color, 0, NULL);
+    cmdlist->OMSetRenderTargets(1, &dr->rtv_descriptor_handles[backbuffer_index], FALSE, &dr->dsv_heap->GetCPUDescriptorHandleForHeapStart());
 
     switch (shading)
     {

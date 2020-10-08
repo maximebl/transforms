@@ -22,6 +22,7 @@ s_internal void imgui_update();
 s_internal bool show_demo = true;
 s_internal bool is_vsync = false;
 s_internal bool is_waiting_present = true;
+s_internal bool is_indirect_drawing = false;
 
 // Command objects
 s_internal device_resources *dr = nullptr;
@@ -41,16 +42,16 @@ s_internal ID3DBlob *billboard_blob_gs = nullptr;
 s_internal ID3DBlob *points_blob_vs = nullptr;
 s_internal ID3DBlob *points_blob_ps = nullptr;
 s_internal ID3DBlob *particle_sim_blob_cs = nullptr;
-s_internal ID3DBlob *particle_sim_blob_vs = nullptr;
-s_internal ID3DBlob *particle_sim_blob_ps = nullptr;
 s_internal ID3DBlob *floorgrid_blob_vs = nullptr;
 s_internal ID3DBlob *floorgrid_blob_ps = nullptr;
+s_internal ID3DBlob *commands_blob_cs = nullptr;
 
 s_internal ID3D12PipelineState *billboard_pso = nullptr;
 s_internal ID3D12PipelineState *point_pso = nullptr;
 s_internal ID3D12PipelineState *noproj_point_pso = nullptr;
 s_internal ID3D12PipelineState *particle_sim_pso = nullptr;
 s_internal ID3D12PipelineState *floorgrid_pso = nullptr;
+s_internal ID3D12PipelineState *commands_pso = nullptr;
 
 // Textures
 ID3D12DescriptorHeap *srv_heap = nullptr;
@@ -76,14 +77,34 @@ s_internal std::string cpu_particle_sim = "cpu_particle_sim";
 
 // Particles data
 s_internal ID3D12Resource *particle_output_default = nullptr;
-s_internal ID3D12Resource *particle_output_upload = nullptr;
 s_internal ID3D12Resource *particle_input_default = nullptr;
-s_internal ID3D12Resource *particle_input_upload = nullptr;
-s_internal ID3D12Resource *particle_reset_default = nullptr;
-s_internal ID3D12Resource *particle_reset_upload = nullptr;
 s_internal particle::mcallister_system *particle_system = nullptr;
 s_internal std::array<particle::aligned_particle_aos, particle_system->m_max_particles_per_frame> *particle_data = nullptr;
 s_internal bool should_reset_particles = false;
+
+// Indirect commands data
+struct draw_indirect_command
+{
+    D3D12_VERTEX_BUFFER_VIEW vbv;
+    D3D12_DRAW_ARGUMENTS draw_args;
+};
+
+s_internal ID3D12Resource *indirect_drawing_default = nullptr;
+s_internal ID3D12Resource *indirect_drawing_upload = nullptr;
+s_internal ID3D12CommandSignature *drawing_cmd_sig = nullptr;
+
+struct culling_indirect_command
+{
+    D3D12_GPU_VIRTUAL_ADDRESS particle_input_uav;
+    D3D12_GPU_VIRTUAL_ADDRESS particle_output_uav;
+    D3D12_DISPATCH_ARGUMENTS dispatch_args;
+};
+
+s_internal ID3D12Resource *indirect_culling_output_default = nullptr;
+s_internal ID3D12Resource *indirect_culling_output_upload = nullptr;
+s_internal ID3D12Resource *indirect_culling_input_default = nullptr;
+s_internal ID3D12Resource *indirect_culling_input_upload = nullptr;
+s_internal ID3D12CommandSignature *culling_cmd_sig = nullptr;
 
 // Camera
 s_internal ImVec2 last_mouse_pos = {};
@@ -119,18 +140,16 @@ extern "C" __declspec(dllexport) bool initialize()
     particle_system = new particle::mcallister_system(
         // The source
         new particle::flow(50.0,
-                           {
-                               // List of initializers
-                               new particle::position<particle::point>(XMFLOAT4(0.0f, -1.5f, 0.0f, 0.f)),
-                               new particle::size<particle::constant>(1.f),
-                               new particle::age<particle::constant>(1.f),
-                               new particle::velocity<particle::point>(XMFLOAT4(0.f, 0.f, 0.f, 0.f))
-                               //new particle::size<particle::random>({0.1f, 1.f}),
-                               //new particle::age<particle::random>({0.f, 5.f}),
-                               //new particle::velocity<particle::cylinder>({XMVectorSet(0.f, 1.f, 0.f, 0.f),
-                               //                                            XMVectorSet(0.f, 2.f, 0.f, 0.f),
-                               //                                            0.1f, 0.2f})
-                           }),
+                           {// List of initializers
+                            new particle::position<particle::point>(XMFLOAT3(0.0f, -1.5f, 0.0f)),
+                            new particle::size<particle::constant>(1.f),
+                            new particle::age<particle::constant>(1.f),
+                            //new particle::velocity<particle::point>(XMFLOAT3(0.f, 01.f, 0.f))
+                            //new particle::size<particle::random>({0.1f, 1.f}),
+                            //new particle::age<particle::random>({0.f, 5.f}),
+                            new particle::velocity<particle::cylinder>({XMVectorSet(0.f, 1.f, 0.f, 0.f),
+                                                                        XMVectorSet(0.f, 2.f, 0.f, 0.f),
+                                                                        0.1f, 0.2f})}),
         {
             // List of actions
             new particle::move()
@@ -174,30 +193,107 @@ extern "C" __declspec(dllexport) bool initialize()
     particle_data = new std::array<particle::aligned_particle_aos, particle_system->m_max_particles_per_frame>();
     for (int i = 0; i < particle_system->m_max_particles_per_frame; i++)
     {
-        particle_data->at(i) = {};
         particle_data->at(i).position = {random_float(0.f, 1.f),
                                          random_float(0.f, 1.f),
-                                         random_float(0.f, 1.f),
-                                         1.f};
+                                         random_float(0.f, 1.f)};
         particle_data->at(i).size = 1.f;
+        particle_data->at(i).age = 1.f;
     }
 
+    ID3D12Resource *particle_output_upload = nullptr;
     create_default_buffer(device, main_cmdlist, particle_data->data(), particle_buffer_size,
                           &particle_output_upload, &particle_output_default, "particle_output_data", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
+    ID3D12Resource *particle_input_upload = nullptr;
     create_default_buffer(device, main_cmdlist, particle_data->data(), particle_buffer_size,
                           &particle_input_upload, &particle_input_default, "particle_input_data", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
-    create_default_buffer(device, main_cmdlist, particle_data->data(), particle_buffer_size,
-                          &particle_reset_upload, &particle_reset_default, "particle_reset_data", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+    // Create indirect drawing command objects
+    D3D12_DRAW_ARGUMENTS draw_args = {};
+    draw_args.InstanceCount = 1;
+    draw_args.VertexCountPerInstance = particle_system->m_max_particles_per_frame;
+    draw_args.StartInstanceLocation = 0;
+    draw_args.StartVertexLocation = 0;
 
+    draw_indirect_command indirect_cmd = {};
+    indirect_cmd.vbv.BufferLocation = particle_input_default->GetGPUVirtualAddress();
+    indirect_cmd.vbv.SizeInBytes = particle_system->m_max_particles_per_frame * particle::particle_byte_size;
+    indirect_cmd.vbv.StrideInBytes = particle::particle_byte_size;
+    indirect_cmd.draw_args = draw_args;
+
+    size_t indirect_arg_buffer_size = sizeof(draw_indirect_command);
+
+    create_default_buffer(device, main_cmdlist,
+                          (void *)&indirect_cmd, indirect_arg_buffer_size,
+                          &indirect_drawing_upload, &indirect_drawing_default, "draw_args");
+
+    D3D12_INDIRECT_ARGUMENT_DESC draw_indirect_args[2] = {};
+    draw_indirect_args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_VERTEX_BUFFER_VIEW;
+    draw_indirect_args[0].VertexBuffer.Slot = 0;
+    draw_indirect_args[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW;
+
+    D3D12_COMMAND_SIGNATURE_DESC cmdsig_desc = {};
+    cmdsig_desc.NodeMask = DEFAULT_NODE;
+    cmdsig_desc.NumArgumentDescs = _countof(draw_indirect_args);
+    cmdsig_desc.pArgumentDescs = draw_indirect_args;
+    cmdsig_desc.ByteStride = (UINT)indirect_arg_buffer_size;
+
+    check_hr(device->CreateCommandSignature(&cmdsig_desc, nullptr, IID_PPV_ARGS(&drawing_cmd_sig)));
+    NAME_D3D12_OBJECT(drawing_cmd_sig);
+
+    // Create GPU culling indirect command objects
+    D3D12_DISPATCH_ARGUMENTS dispatch_args = {1, 1, 1};
+
+    culling_indirect_command culling_cmd = {};
+    culling_cmd.dispatch_args = dispatch_args;
+    culling_cmd.particle_input_uav = particle_input_default->GetGPUVirtualAddress();
+    culling_cmd.particle_output_uav = particle_output_default->GetGPUVirtualAddress();
+
+    indirect_arg_buffer_size = sizeof(culling_indirect_command);
+
+    create_default_buffer(device, main_cmdlist,
+                          (void *)&culling_cmd, indirect_arg_buffer_size,
+                          &indirect_culling_output_upload, &indirect_culling_output_default, "culling_output_args");
+
+    create_default_buffer(device, main_cmdlist,
+                          nullptr, indirect_arg_buffer_size,
+                          &indirect_culling_input_upload, &indirect_culling_input_default, "culling_input_args");
+
+    D3D12_INDIRECT_ARGUMENT_DESC culling_indirect_args[3] = {};
+    culling_indirect_args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_UNORDERED_ACCESS_VIEW;
+    culling_indirect_args[0].UnorderedAccessView.RootParameterIndex = 2;
+    culling_indirect_args[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_UNORDERED_ACCESS_VIEW;
+    culling_indirect_args[1].UnorderedAccessView.RootParameterIndex = 3;
+    culling_indirect_args[2].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+
+    cmdsig_desc.NumArgumentDescs = _countof(culling_indirect_args);
+    cmdsig_desc.pArgumentDescs = culling_indirect_args;
+    cmdsig_desc.ByteStride = indirect_arg_buffer_size;
+
+    check_hr(device->CreateCommandSignature(&cmdsig_desc, nullptr, IID_PPV_ARGS(&culling_cmd_sig)));
+    NAME_D3D12_OBJECT(culling_cmd_sig);
+
+    main_cmdlist->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+                                         indirect_culling_output_default,
+                                         D3D12_RESOURCE_STATE_COPY_DEST,
+                                         D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT));
+    main_cmdlist->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+                                         indirect_culling_input_default,
+                                         D3D12_RESOURCE_STATE_COPY_DEST,
+                                         D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT));
+    main_cmdlist->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+                                         indirect_drawing_default,
+                                         D3D12_RESOURCE_STATE_COPY_DEST,
+                                         D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT));
+    // Execute initialization commands
     main_cmdlist->Close();
     cmd_queue->ExecuteCommandLists(1, (ID3D12CommandList *const *)&main_cmdlist);
     dr->flush_cmd_queue();
 
     safe_release(particle_input_upload);
     safe_release(particle_output_upload);
-    safe_release(particle_reset_upload);
+    safe_release(indirect_drawing_upload);
+    safe_release(indirect_culling_output_upload);
 
     return true;
 }
@@ -251,7 +347,10 @@ extern "C" __declspec(dllexport) bool update_and_render()
 
     // Update particles
     timer.start(cpu_particle_sim);
-    particle_system->simulate(dt, frame);
+    if (particle_system->m_simulation_mode == particle::simulation_mode::cpu)
+    {
+        particle_system->simulate(dt, frame);
+    }
     timer.stop(cpu_particle_sim);
 
     timer.start(cpu_wait_time);
@@ -292,10 +391,10 @@ extern "C" __declspec(dllexport) bool update_and_render()
 
     PIXBeginEvent(main_cmdlist, 1, "clear_dsv_rtv");
     main_cmdlist->ClearDepthStencilView(dr->dsv_heap->GetCPUDescriptorHandleForHeapStart(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.f, 0, 0, NULL);
-    main_cmdlist->ClearRenderTargetView(dr->rtv_descriptors[backbuffer_index], DirectX::Colors::Black, 0, NULL);
+    main_cmdlist->ClearRenderTargetView(dr->rtv_descriptor_handles[backbuffer_index], DirectX::Colors::Black, 0, NULL);
     PIXEndEvent(main_cmdlist);
 
-    main_cmdlist->OMSetRenderTargets(1, &dr->rtv_descriptors[backbuffer_index], FALSE, &dr->dsv_heap->GetCPUDescriptorHandleForHeapStart());
+    main_cmdlist->OMSetRenderTargets(1, &dr->rtv_descriptor_handles[backbuffer_index], FALSE, &dr->dsv_heap->GetCPUDescriptorHandleForHeapStart());
 
     main_cmdlist->SetGraphicsRootSignature(dr->rootsig);
     main_cmdlist->SetGraphicsRootConstantBufferView(0, frame->cb_pass_upload->m_uploadbuffer->GetGPUVirtualAddress());
@@ -311,6 +410,12 @@ extern "C" __declspec(dllexport) bool update_and_render()
 
     if (particle_system->m_simulation_mode == particle::simulation_mode::gpu)
     {
+
+        main_cmdlist->SetPipelineState(commands_pso);
+        main_cmdlist->SetComputeRootUnorderedAccessView(2, indirect_culling_output_default->GetGPUVirtualAddress());
+        main_cmdlist->SetComputeRootShaderResourceView(4, indirect_culling_input_default->GetGPUVirtualAddress());
+        main_cmdlist->Dispatch(1, 1, 1);
+
         // Simulate particles
         query->start(gpu_particles_sim_query);
         main_cmdlist->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
@@ -319,13 +424,12 @@ extern "C" __declspec(dllexport) bool update_and_render()
                                              D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
 
         main_cmdlist->SetComputeRootSignature(dr->rootsig);
-        main_cmdlist->SetComputeRootConstantBufferView(0, frame->cb_pass_upload->m_uploadbuffer->GetGPUVirtualAddress());
         main_cmdlist->SetPipelineState(particle_sim_pso);
 
         main_cmdlist->SetComputeRootUnorderedAccessView(2, particle_output_default->GetGPUVirtualAddress());
-        main_cmdlist->SetComputeRootUnorderedAccessView(3, particle_reset_default->GetGPUVirtualAddress());
-        main_cmdlist->SetComputeRootUnorderedAccessView(4, particle_input_default->GetGPUVirtualAddress());
-        main_cmdlist->Dispatch(200, 1, 1);
+        main_cmdlist->SetComputeRootUnorderedAccessView(3, particle_input_default->GetGPUVirtualAddress());
+        main_cmdlist->Dispatch(1, 1, 1);
+
         query->stop(gpu_particles_sim_query);
 
         // Draw particles
@@ -335,19 +439,45 @@ extern "C" __declspec(dllexport) bool update_and_render()
                                              D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                                              D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER));
 
-        D3D12_VERTEX_BUFFER_VIEW vbv = {};
-        vbv.BufferLocation = particle_output_default->GetGPUVirtualAddress();
-        vbv.SizeInBytes = particle_system->m_max_particles_per_frame * particle::particle_byte_size;
-        vbv.StrideInBytes = particle::particle_byte_size;
-        main_cmdlist->IASetVertexBuffers(0, 1, &vbv);
+        main_cmdlist->SetDescriptorHeaps(1, &srv_heap);
+        main_cmdlist->SetGraphicsRootDescriptorTable(1, srv_heap->GetGPUDescriptorHandleForHeapStart());
         main_cmdlist->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
-        main_cmdlist->SetPipelineState(point_pso);
-        main_cmdlist->DrawInstanced(particle_system->m_max_particles_per_frame, 1, 0, 0);
+
+        switch (particle_system->m_rendering_mode)
+        {
+        case particle::rendering_mode::point:
+            main_cmdlist->SetPipelineState(point_pso);
+            break;
+
+        case particle::rendering_mode::billboard:
+            main_cmdlist->SetPipelineState(billboard_pso);
+            break;
+
+        case particle::rendering_mode::overdraw:
+            // Not yet implemented. Fallback to billboards
+            main_cmdlist->SetPipelineState(billboard_pso);
+            break;
+        }
+
+        if (is_indirect_drawing)
+        {
+            main_cmdlist->ExecuteIndirect(drawing_cmd_sig, 1, indirect_drawing_default, 0, nullptr, 0);
+        }
+        else
+        {
+            D3D12_VERTEX_BUFFER_VIEW vbv = {};
+            vbv.BufferLocation = particle_output_default->GetGPUVirtualAddress();
+            vbv.SizeInBytes = particle_system->m_max_particles_per_frame * particle::particle_byte_size;
+            vbv.StrideInBytes = particle::particle_byte_size;
+            main_cmdlist->IASetVertexBuffers(0, 1, &vbv);
+
+            main_cmdlist->DrawInstanced(particle_system->m_max_particles_per_frame, 1, 0, 0);
+        }
 
         // Swap read and write buffers
         // this makes the pipeline use our previously transformed particles to draw
         // while the compute pipeline is simulating the next batch of particles
-        particle_input_default = particle_reset_default;
+        particle_output_default = particle_input_default;
 
         query->stop(gpu_particles_draw_query);
     }
@@ -435,6 +565,7 @@ void imgui_update()
 
     ImGui::Separator();
 
+    ImGui::Checkbox("Indirect drawing", &is_indirect_drawing);
     ImGui::Text("GPU particles time: %f ms", query->result(gpu_particles_time_query));
     ImGui::Text("GPU particles simulation time: %f ms", query->result(gpu_particles_sim_query));
     ImGui::Text("GPU particles draw time: %f ms", query->result(gpu_particles_draw_query));
@@ -495,12 +626,13 @@ void create_shader_objects()
 
     // GPU particle simulation compute shader
     compile_shader(L"..\\..\\particles\\shaders\\particle_sim.hlsl", L"CS", shader_type::compute, &particle_sim_blob_cs);
-    compile_shader(L"..\\..\\particles\\shaders\\particle_sim.hlsl", L"VS", shader_type::vertex, &particle_sim_blob_vs);
-    compile_shader(L"..\\..\\particles\\shaders\\particle_sim.hlsl", L"PS", shader_type::pixel, &particle_sim_blob_ps);
 
     // Floor grid shaders
     compile_shader(L"..\\..\\particles\\shaders\\floorgrid.hlsl", L"VS", shader_type::vertex, &floorgrid_blob_vs);
     compile_shader(L"..\\..\\particles\\shaders\\floorgrid.hlsl", L"PS", shader_type::pixel, &floorgrid_blob_ps);
+
+    // Indirect command filtering shader
+    compile_shader(L"..\\..\\particles\\shaders\\commands_filter.hlsl", L"CS", shader_type::compute, &commands_blob_cs);
 
     std::vector<CD3DX12_ROOT_PARAMETER1> params = {};
 
@@ -523,14 +655,14 @@ void create_shader_objects()
     params.push_back(param_output_particle);
 
     // (root) RWStructuredBuffer<particle> : register(u1);
-    CD3DX12_ROOT_PARAMETER1 param_reset_particle = {};
-    param_reset_particle.InitAsUnorderedAccessView(1, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE, D3D12_SHADER_VISIBILITY_ALL);
-    params.push_back(param_reset_particle);
-
-    // (root) RWStructuredBuffer<particle> : register(u2);
     CD3DX12_ROOT_PARAMETER1 param_input_particle = {};
-    param_input_particle.InitAsUnorderedAccessView(2, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE, D3D12_SHADER_VISIBILITY_ALL);
+    param_input_particle.InitAsUnorderedAccessView(1, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE, D3D12_SHADER_VISIBILITY_ALL);
     params.push_back(param_input_particle);
+
+    // (root) StructuredBuffer<indirect_command> : register(t0);
+    CD3DX12_ROOT_PARAMETER1 param_in_commands = {};
+    param_in_commands.InitAsShaderResourceView(2, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_ALL);
+    params.push_back(param_in_commands);
 
     // Samplers
     std::vector<CD3DX12_STATIC_SAMPLER_DESC> samplers = {};
@@ -544,9 +676,9 @@ void create_shader_objects()
     dr->create_rootsig(&params, &samplers);
 
     std::vector<D3D12_INPUT_ELEMENT_DESC> particle_input_elem_desc;
-    particle_input_elem_desc.push_back({"POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
+    particle_input_elem_desc.push_back({"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
     particle_input_elem_desc.push_back({"SIZE", 0, DXGI_FORMAT_R32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
-    particle_input_elem_desc.push_back({"VELOCITY", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
+    particle_input_elem_desc.push_back({"VELOCITY", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
     particle_input_elem_desc.push_back({"AGE", 0, DXGI_FORMAT_R32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
 
     std::vector<D3D12_INPUT_ELEMENT_DESC> mesh_input_elem_desc;
@@ -629,13 +761,6 @@ void create_shader_objects()
     check_hr(device->CreateGraphicsPipelineState(&point_pso_desc, IID_PPV_ARGS(&point_pso)));
     NAME_D3D12_OBJECT(point_pso);
 
-    // Point PSO (no projection)
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC noproj_point_pso_desc = point_pso_desc;
-    noproj_point_pso_desc.VS = {particle_sim_blob_vs->GetBufferPointer(), particle_sim_blob_vs->GetBufferSize()};
-    noproj_point_pso_desc.PS = {particle_sim_blob_ps->GetBufferPointer(), particle_sim_blob_ps->GetBufferSize()};
-    check_hr(device->CreateGraphicsPipelineState(&noproj_point_pso_desc, IID_PPV_ARGS(&noproj_point_pso)));
-    NAME_D3D12_OBJECT(noproj_point_pso);
-
     // Floor grid PSO
     D3D12_GRAPHICS_PIPELINE_STATE_DESC floorgrid_pso_desc = dr->create_default_pso_desc(&mesh_input_elem_desc);
     floorgrid_pso_desc.PS = {floorgrid_blob_ps->GetBufferPointer(), floorgrid_blob_ps->GetBufferSize()};
@@ -644,7 +769,7 @@ void create_shader_objects()
     check_hr(device->CreateGraphicsPipelineState(&floorgrid_pso_desc, IID_PPV_ARGS(&floorgrid_pso)));
     NAME_D3D12_OBJECT(floorgrid_pso);
 
-    // Compute PSO
+    // Particle simulation compute PSO
     D3D12_COMPUTE_PIPELINE_STATE_DESC particle_sim_pso_desc = {};
     particle_sim_pso_desc.CS = {particle_sim_blob_cs->GetBufferPointer(), particle_sim_blob_cs->GetBufferSize()};
     particle_sim_pso_desc.pRootSignature = dr->rootsig;
@@ -652,6 +777,12 @@ void create_shader_objects()
     particle_sim_pso_desc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
     check_hr(device->CreateComputePipelineState(&particle_sim_pso_desc, IID_PPV_ARGS(&particle_sim_pso)));
     NAME_D3D12_OBJECT(particle_sim_pso);
+
+    // Indirect commands filtering PSO
+    D3D12_COMPUTE_PIPELINE_STATE_DESC commands_filtering_pso_desc = particle_sim_pso_desc;
+    commands_filtering_pso_desc.CS = {commands_blob_cs->GetBufferPointer(), commands_blob_cs->GetBufferSize()};
+    check_hr(device->CreateComputePipelineState(&commands_filtering_pso_desc, IID_PPV_ARGS(&commands_pso)));
+    NAME_D3D12_OBJECT(commands_pso);
 }
 
 void create_texture_objects()
@@ -736,14 +867,23 @@ extern "C" __declspec(dllexport) void cleanup()
     delete particle_system;
     delete query;
     safe_release(srv_heap);
+    safe_release(drawing_cmd_sig);
     safe_release(particle_sim_pso);
+    safe_release(commands_pso);
+    safe_release(point_pso);
+    safe_release(billboard_pso);
+    safe_release(floorgrid_pso);
     safe_release(particle_input_default);
     safe_release(particle_output_default);
-    safe_release(billboard_pso);
-    safe_release(point_pso);
     safe_release(main_cmdlist);
     safe_release(fire_texture_default_resource);
     safe_release(fire_texture_upload_resource);
+    safe_release(indirect_drawing_default);
+    safe_release(floor_grid.resource->index_default);
+    safe_release(floor_grid.resource->index_upload);
+    safe_release(floor_grid.resource->vertex_default);
+    safe_release(floor_grid.resource->vertex_upload);
+    delete floor_grid.resource;
     imgui_shutdown();
     delete dr;
 
