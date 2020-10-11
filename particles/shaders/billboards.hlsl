@@ -131,10 +131,6 @@ void GS(point vertex_out gs_in[1], inout TriangleStream<geo_out> stream)
 
 pixel_out PS(geo_out ps_in)
 {
-    pixel_out ps_o; 
-    ps_o.color = float4(1.f,0.f,0.f,1.f);
-    return ps_o;
-
     float2 offset = float2(0.5f, 0.5f);
     float tex_scale_factor = 0.5f;
     // Center the texture coordinates and scale them by a texture scale factor
@@ -163,7 +159,5 @@ pixel_out PS(geo_out ps_in)
     pixel_out ps_out;
 
     ps_out.color = sampled_color;
-    //ps_out.color = float4(panning_alpha, 0.f, 0.f, 0.f);
-    //ps_out.color = float4(1.f,0.f,0.f,1.f);
     return ps_out;
 }

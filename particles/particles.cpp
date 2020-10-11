@@ -22,7 +22,7 @@ s_internal void imgui_update();
 s_internal bool show_demo = true;
 s_internal bool is_vsync = false;
 s_internal bool is_waiting_present = true;
-s_internal bool is_indirect_drawing = false;
+s_internal bool is_gpu_culling = true;
 
 // Command objects
 s_internal device_resources *dr = nullptr;
@@ -81,6 +81,7 @@ s_internal ID3D12Resource *particle_input_default = nullptr;
 s_internal particle::mcallister_system *particle_system = nullptr;
 s_internal std::array<particle::aligned_particle_aos, particle_system->m_max_particles_per_frame> *particle_data = nullptr;
 s_internal bool should_reset_particles = false;
+s_internal UINT num_particle_systems = 1;
 
 // Indirect commands data
 struct draw_indirect_command
@@ -93,18 +94,19 @@ s_internal ID3D12Resource *indirect_drawing_default = nullptr;
 s_internal ID3D12Resource *indirect_drawing_upload = nullptr;
 s_internal ID3D12CommandSignature *drawing_cmd_sig = nullptr;
 
-struct culling_indirect_command
+struct simulation_indirect_command
 {
     D3D12_GPU_VIRTUAL_ADDRESS particle_input_uav;
     D3D12_GPU_VIRTUAL_ADDRESS particle_output_uav;
+    D3D12_GPU_VIRTUAL_ADDRESS pass_data_cbv;
     D3D12_DISPATCH_ARGUMENTS dispatch_args;
 };
 
-s_internal ID3D12Resource *indirect_culling_output_default = nullptr;
-s_internal ID3D12Resource *indirect_culling_output_upload = nullptr;
-s_internal ID3D12Resource *indirect_culling_input_default = nullptr;
+s_internal ID3D12Resource *indirect_simulation_output_default = nullptr;
+s_internal ID3D12Resource *indirect_simulation_output_upload = nullptr;
+s_internal ID3D12Resource *indirect_simulation_input_default = nullptr;
 s_internal ID3D12Resource *indirect_culling_input_upload = nullptr;
-s_internal ID3D12CommandSignature *culling_cmd_sig = nullptr;
+s_internal ID3D12CommandSignature *particle_sim_cmd_sig = nullptr;
 
 // Camera
 s_internal ImVec2 last_mouse_pos = {};
@@ -244,41 +246,45 @@ extern "C" __declspec(dllexport) bool initialize()
     // Create GPU culling indirect command objects
     D3D12_DISPATCH_ARGUMENTS dispatch_args = {1, 1, 1};
 
-    culling_indirect_command culling_cmd = {};
-    culling_cmd.dispatch_args = dispatch_args;
-    culling_cmd.particle_input_uav = particle_input_default->GetGPUVirtualAddress();
-    culling_cmd.particle_output_uav = particle_output_default->GetGPUVirtualAddress();
+    simulation_indirect_command simulation_cmd = {};
+    simulation_cmd.dispatch_args = dispatch_args;
+    simulation_cmd.particle_input_uav = particle_input_default->GetGPUVirtualAddress();
+    simulation_cmd.particle_output_uav = particle_output_default->GetGPUVirtualAddress();
+    simulation_cmd.pass_data_cbv = frame->cb_pass_upload->m_uploadbuffer->GetGPUVirtualAddress();
 
-    indirect_arg_buffer_size = sizeof(culling_indirect_command);
-
-    create_default_buffer(device, main_cmdlist,
-                          (void *)&culling_cmd, indirect_arg_buffer_size,
-                          &indirect_culling_output_upload, &indirect_culling_output_default, "culling_output_args");
+    indirect_arg_buffer_size = sizeof(simulation_indirect_command);
 
     create_default_buffer(device, main_cmdlist,
-                          nullptr, indirect_arg_buffer_size,
-                          &indirect_culling_input_upload, &indirect_culling_input_default, "culling_input_args");
+                          (void *)&simulation_cmd, indirect_arg_buffer_size,
+                          &indirect_culling_input_upload, &indirect_simulation_input_default, "simulation_input_args");
 
-    D3D12_INDIRECT_ARGUMENT_DESC culling_indirect_args[3] = {};
-    culling_indirect_args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_UNORDERED_ACCESS_VIEW;
-    culling_indirect_args[0].UnorderedAccessView.RootParameterIndex = 2;
-    culling_indirect_args[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_UNORDERED_ACCESS_VIEW;
-    culling_indirect_args[1].UnorderedAccessView.RootParameterIndex = 3;
-    culling_indirect_args[2].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+    int tmp = 0;
+    create_default_buffer(device, main_cmdlist,
+                          (void *)&tmp, indirect_arg_buffer_size,
+                          &indirect_simulation_output_upload, &indirect_simulation_output_default, "simulation_output_args", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
-    cmdsig_desc.NumArgumentDescs = _countof(culling_indirect_args);
-    cmdsig_desc.pArgumentDescs = culling_indirect_args;
-    cmdsig_desc.ByteStride = indirect_arg_buffer_size;
+    D3D12_INDIRECT_ARGUMENT_DESC simulation_indirect_args[4] = {};
+    simulation_indirect_args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT_BUFFER_VIEW;
+    simulation_indirect_args[0].ConstantBufferView.RootParameterIndex = 0;
+    simulation_indirect_args[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_UNORDERED_ACCESS_VIEW;
+    simulation_indirect_args[1].UnorderedAccessView.RootParameterIndex = 2;
+    simulation_indirect_args[2].Type = D3D12_INDIRECT_ARGUMENT_TYPE_UNORDERED_ACCESS_VIEW;
+    simulation_indirect_args[2].UnorderedAccessView.RootParameterIndex = 3;
+    simulation_indirect_args[3].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
 
-    check_hr(device->CreateCommandSignature(&cmdsig_desc, nullptr, IID_PPV_ARGS(&culling_cmd_sig)));
-    NAME_D3D12_OBJECT(culling_cmd_sig);
+    cmdsig_desc.NumArgumentDescs = _countof(simulation_indirect_args);
+    cmdsig_desc.pArgumentDescs = simulation_indirect_args;
+    cmdsig_desc.ByteStride = (UINT)indirect_arg_buffer_size;
+
+    check_hr(device->CreateCommandSignature(&cmdsig_desc, dr->rootsig, IID_PPV_ARGS(&particle_sim_cmd_sig)));
+    NAME_D3D12_OBJECT(particle_sim_cmd_sig);
 
     main_cmdlist->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
-                                         indirect_culling_output_default,
+                                         indirect_simulation_output_default,
                                          D3D12_RESOURCE_STATE_COPY_DEST,
                                          D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT));
     main_cmdlist->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
-                                         indirect_culling_input_default,
+                                         indirect_simulation_input_default,
                                          D3D12_RESOURCE_STATE_COPY_DEST,
                                          D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT));
     main_cmdlist->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
@@ -293,7 +299,7 @@ extern "C" __declspec(dllexport) bool initialize()
     safe_release(particle_input_upload);
     safe_release(particle_output_upload);
     safe_release(indirect_drawing_upload);
-    safe_release(indirect_culling_output_upload);
+    safe_release(indirect_simulation_output_upload);
 
     return true;
 }
@@ -397,6 +403,7 @@ extern "C" __declspec(dllexport) bool update_and_render()
     main_cmdlist->OMSetRenderTargets(1, &dr->rtv_descriptor_handles[backbuffer_index], FALSE, &dr->dsv_heap->GetCPUDescriptorHandleForHeapStart());
 
     main_cmdlist->SetGraphicsRootSignature(dr->rootsig);
+    main_cmdlist->SetComputeRootSignature(dr->rootsig);
     main_cmdlist->SetGraphicsRootConstantBufferView(0, frame->cb_pass_upload->m_uploadbuffer->GetGPUVirtualAddress());
 
     // Draw floor grid
@@ -406,80 +413,122 @@ extern "C" __declspec(dllexport) bool update_and_render()
     main_cmdlist->IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_LINELIST);
     main_cmdlist->DrawIndexedInstanced(floor_grid.index_count, 1, 0, 0, 0);
 
+
+    // Draw particles
     query->start(gpu_particles_time_query);
+    main_cmdlist->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
 
     if (particle_system->m_simulation_mode == particle::simulation_mode::gpu)
     {
-
-        main_cmdlist->SetPipelineState(commands_pso);
-        main_cmdlist->SetComputeRootUnorderedAccessView(2, indirect_culling_output_default->GetGPUVirtualAddress());
-        main_cmdlist->SetComputeRootShaderResourceView(4, indirect_culling_input_default->GetGPUVirtualAddress());
-        main_cmdlist->Dispatch(1, 1, 1);
-
-        // Simulate particles
-        query->start(gpu_particles_sim_query);
-        main_cmdlist->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
-                                             particle_output_default,
-                                             D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
-                                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
-
-        main_cmdlist->SetComputeRootSignature(dr->rootsig);
-        main_cmdlist->SetPipelineState(particle_sim_pso);
-
-        main_cmdlist->SetComputeRootUnorderedAccessView(2, particle_output_default->GetGPUVirtualAddress());
-        main_cmdlist->SetComputeRootUnorderedAccessView(3, particle_input_default->GetGPUVirtualAddress());
-        main_cmdlist->Dispatch(1, 1, 1);
-
-        query->stop(gpu_particles_sim_query);
-
-        // Draw particles
-        query->start(gpu_particles_draw_query);
-        main_cmdlist->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
-                                             particle_output_default,
-                                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                             D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER));
-
-        main_cmdlist->SetDescriptorHeaps(1, &srv_heap);
-        main_cmdlist->SetGraphicsRootDescriptorTable(1, srv_heap->GetGPUDescriptorHandleForHeapStart());
-        main_cmdlist->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
-
-        switch (particle_system->m_rendering_mode)
+        if (is_gpu_culling)
         {
-        case particle::rendering_mode::point:
-            main_cmdlist->SetPipelineState(point_pso);
-            break;
+            // GPU frustum culling of simulation and draw commands
+            main_cmdlist->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+                                                 particle_output_default,
+                                                 D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
+                                                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
+            main_cmdlist->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+                                                 indirect_simulation_output_default,
+                                                 D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT,
+                                                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
 
-        case particle::rendering_mode::billboard:
-            main_cmdlist->SetPipelineState(billboard_pso);
-            break;
+            main_cmdlist->SetPipelineState(commands_pso);
+            main_cmdlist->SetComputeRoot32BitConstant(6, num_particle_systems, 0); // commands_count
+            main_cmdlist->SetComputeRootShaderResourceView(4, indirect_simulation_input_default->GetGPUVirtualAddress());
+            main_cmdlist->SetComputeRootUnorderedAccessView(5, indirect_simulation_output_default->GetGPUVirtualAddress());
+            main_cmdlist->Dispatch(1, 1, 1);
 
-        case particle::rendering_mode::overdraw:
-            // Not yet implemented. Fallback to billboards
-            main_cmdlist->SetPipelineState(billboard_pso);
-            break;
-        }
+            // Indirect particle simulation
+            main_cmdlist->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+                                                 indirect_simulation_output_default,
+                                                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                                 D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT));
 
-        if (is_indirect_drawing)
-        {
-            main_cmdlist->ExecuteIndirect(drawing_cmd_sig, 1, indirect_drawing_default, 0, nullptr, 0);
+            main_cmdlist->SetPipelineState(particle_sim_pso);
+            main_cmdlist->ExecuteIndirect(particle_sim_cmd_sig, num_particle_systems, indirect_simulation_output_default, 0, nullptr, 0);
+
+            // Indirect particle drawing
+            main_cmdlist->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+                                                 particle_output_default,
+                                                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                                 D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER));
+
+            switch (particle_system->m_rendering_mode)
+            {
+            case particle::rendering_mode::point:
+                main_cmdlist->SetPipelineState(point_pso);
+                break;
+
+            case particle::rendering_mode::billboard:
+                main_cmdlist->SetDescriptorHeaps(1, &srv_heap);
+                main_cmdlist->SetGraphicsRootDescriptorTable(1, srv_heap->GetGPUDescriptorHandleForHeapStart());
+                main_cmdlist->SetPipelineState(billboard_pso);
+                break;
+
+            case particle::rendering_mode::overdraw:
+                // Not yet implemented. Fallback to billboards
+                main_cmdlist->SetPipelineState(billboard_pso);
+                break;
+            }
+
+            main_cmdlist->ExecuteIndirect(drawing_cmd_sig, num_particle_systems, indirect_drawing_default, 0, nullptr, 0);
         }
         else
         {
+            // Simulate particles
+            query->start(gpu_particles_sim_query);
+            main_cmdlist->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+                                                 particle_output_default,
+                                                 D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
+                                                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
+
+            main_cmdlist->SetPipelineState(particle_sim_pso);
+            main_cmdlist->SetComputeRootConstantBufferView(0, frame->cb_pass_upload->m_uploadbuffer->GetGPUVirtualAddress());
+            main_cmdlist->SetComputeRootUnorderedAccessView(2, particle_output_default->GetGPUVirtualAddress());
+            main_cmdlist->SetComputeRootUnorderedAccessView(3, particle_input_default->GetGPUVirtualAddress());
+            main_cmdlist->Dispatch(1, 1, 1);
+
+            query->stop(gpu_particles_sim_query);
+
+            // Draw particles
+            query->start(gpu_particles_draw_query);
+            main_cmdlist->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+                                                 particle_output_default,
+                                                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                                 D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER));
+
+            switch (particle_system->m_rendering_mode)
+            {
+            case particle::rendering_mode::point:
+                main_cmdlist->SetPipelineState(point_pso);
+                break;
+
+            case particle::rendering_mode::billboard:
+                main_cmdlist->SetDescriptorHeaps(1, &srv_heap);
+                main_cmdlist->SetGraphicsRootDescriptorTable(1, srv_heap->GetGPUDescriptorHandleForHeapStart());
+                main_cmdlist->SetPipelineState(billboard_pso);
+                break;
+
+            case particle::rendering_mode::overdraw:
+                // Not yet implemented. Fallback to billboards
+                main_cmdlist->SetPipelineState(billboard_pso);
+                break;
+            }
+
             D3D12_VERTEX_BUFFER_VIEW vbv = {};
             vbv.BufferLocation = particle_output_default->GetGPUVirtualAddress();
             vbv.SizeInBytes = particle_system->m_max_particles_per_frame * particle::particle_byte_size;
             vbv.StrideInBytes = particle::particle_byte_size;
             main_cmdlist->IASetVertexBuffers(0, 1, &vbv);
-
             main_cmdlist->DrawInstanced(particle_system->m_max_particles_per_frame, 1, 0, 0);
+
+            // Swap read and write buffers
+            // this makes the pipeline use our previously transformed particles to draw
+            // while the compute pipeline is simulating the next batch of particles
+            particle_output_default = particle_input_default;
+
+            query->stop(gpu_particles_draw_query);
         }
-
-        // Swap read and write buffers
-        // this makes the pipeline use our previously transformed particles to draw
-        // while the compute pipeline is simulating the next batch of particles
-        particle_output_default = particle_input_default;
-
-        query->stop(gpu_particles_draw_query);
     }
 
     if (particle_system->m_simulation_mode == particle::simulation_mode::cpu)
@@ -490,7 +539,6 @@ extern "C" __declspec(dllexport) bool update_and_render()
             // Draw particles
             main_cmdlist->SetDescriptorHeaps(1, &srv_heap);
             main_cmdlist->IASetVertexBuffers(0, (UINT)particle_system->m_VBVs.size(), particle_system->m_VBVs.data());
-            main_cmdlist->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
             main_cmdlist->SetGraphicsRootDescriptorTable(1, srv_heap->GetGPUDescriptorHandleForHeapStart());
 
             switch (particle_system->m_rendering_mode)
@@ -565,7 +613,7 @@ void imgui_update()
 
     ImGui::Separator();
 
-    ImGui::Checkbox("Indirect drawing", &is_indirect_drawing);
+    ImGui::Checkbox("GPU particle system culling", &is_gpu_culling);
     ImGui::Text("GPU particles time: %f ms", query->result(gpu_particles_time_query));
     ImGui::Text("GPU particles simulation time: %f ms", query->result(gpu_particles_sim_query));
     ImGui::Text("GPU particles draw time: %f ms", query->result(gpu_particles_draw_query));
@@ -659,14 +707,23 @@ void create_shader_objects()
     param_input_particle.InitAsUnorderedAccessView(1, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE, D3D12_SHADER_VISIBILITY_ALL);
     params.push_back(param_input_particle);
 
-    // (root) StructuredBuffer<indirect_command> : register(t0);
+    // (root) StructuredBuffer<indirect_command> : register(t1);
     CD3DX12_ROOT_PARAMETER1 param_in_commands = {};
-    param_in_commands.InitAsShaderResourceView(2, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_ALL);
+    param_in_commands.InitAsShaderResourceView(1, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE, D3D12_SHADER_VISIBILITY_ALL);
     params.push_back(param_in_commands);
+
+    // (root) RWStructuredBuffer<indirect_command> : register(u2);
+    CD3DX12_ROOT_PARAMETER1 param_out_commands = {};
+    param_out_commands.InitAsUnorderedAccessView(2, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE, D3D12_SHADER_VISIBILITY_ALL);
+    params.push_back(param_out_commands);
+
+    // (root) ConstantBuffer<command_info> : register(b0);
+    CD3DX12_ROOT_PARAMETER1 param_cmd_info;
+    param_cmd_info.InitAsConstants(1, 2);
+    params.push_back(param_cmd_info);
 
     // Samplers
     std::vector<CD3DX12_STATIC_SAMPLER_DESC> samplers = {};
-
     CD3DX12_STATIC_SAMPLER_DESC linear_sampler_desc = {};
     linear_sampler_desc.Init(0);
     linear_sampler_desc.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
