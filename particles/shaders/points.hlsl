@@ -22,6 +22,7 @@ struct pixel_out
 vertex_out VS(vertex_in vs_in)
 {
     matrix view_proj = mul(cb_pass.view, cb_pass.proj);
+    view_proj = mul(cb_object.model, view_proj);
     vertex_out ps_in;
     ps_in.hpos = mul(float4(vs_in.position, 1.f), view_proj);
 

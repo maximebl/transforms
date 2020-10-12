@@ -83,6 +83,7 @@ void GS(point vertex_out gs_in[1], inout TriangleStream<geo_out> stream)
     };
 
     matrix view_proj = mul(cb_pass.view, cb_pass.proj);
+    view_proj = mul(cb_object.model, view_proj);
     geo_out gs_out;
 
     // The reason we're not using an array and a loop is due to a bug in code gen when using GPU-based validation

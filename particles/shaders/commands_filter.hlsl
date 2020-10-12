@@ -20,6 +20,7 @@ void CS(uint3 thread_id : SV_DispatchThreadID)
     uint index = thread_id.x;
     if (cmd_info.command_count > index)
     {
+        // filter commands...
         out_commands[0] = in_commands[index];
     }
 }

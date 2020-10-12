@@ -19,6 +19,11 @@ struct material_data
     DirectX::XMFLOAT4X4 inv_transform = Identity4x4();
 };
 
+struct model_data
+{
+    DirectX::XMFLOAT4X4 transform = Identity4x4();
+};
+
 class frame_cmd
 {
 public:
@@ -40,4 +45,5 @@ public:
     BYTE *particle_vb_range = nullptr;
     std::unique_ptr<upload_buffer> cb_pass_upload = nullptr;
     std::unique_ptr<upload_buffer> cb_material_upload = nullptr;
+    std::unique_ptr<upload_buffer> cb_transforms_upload = nullptr;
 };

@@ -29,21 +29,22 @@ void CS(uint3 thread_id : SV_DispatchThreadID)
 
     particle p = input_particle[index];
 
-    // Transform to homogenous clip space for the purpose of frustum culling
-    float4 hpos = float4(0.f, 0.f, 0.f, 0.f);
-    matrix view_proj = mul(cb_pass.view, cb_pass.proj);
-    hpos = mul(float4(p.position.xyz, 1.f), view_proj);
+    //// Transform to homogenous clip space for the purpose of frustum culling
+    //float4 hpos = float4(0.f, 0.f, 0.f, 0.f);
+    //matrix view_proj = mul(cb_pass.view, cb_pass.proj);
+    ////view_proj = mul(view_proj, cb_object.model);
+    //hpos = mul(float4(p.position.xyz, 1.f), view_proj);
 
-    // Frustum culling
-    // Let's the shader skip calculating the actions if the particle is out of the view frustum
-    float height = p.size * cb_pass.vert_cotangent;
-    float width = height * cb_pass.aspect_ratio;
-    float3 extent = abs(hpos.xyz) - float3(width, height, 0);
+    //// Frustum culling
+    //// Let's the shader skip calculating the actions if the particle is out of the view frustum
+    //float height = p.size * cb_pass.vert_cotangent;
+    //float width = height * cb_pass.aspect_ratio;
+    //float3 extent = abs(hpos.xyz) - float3(width, height, 0);
 
-    // Frustum cull by checking of any of xyz are outside [-w, w].
-    float unknown = max(max(0.f, extent.x), max(extent.y, extent.z));
-    if (unknown > hpos.w)
-        return;
+    //// Frustum cull by checking of any of xyz are outside [-w, w].
+    //float unknown = max(max(0.f, extent.x), max(extent.y, extent.z));
+    //if (unknown > hpos.w)
+    //    return;
 
     // Run actions on the original particle before the transform to homogenous clip space
     float dt = cb_pass.delta_time;

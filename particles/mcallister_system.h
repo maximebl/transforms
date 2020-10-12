@@ -163,7 +163,7 @@ struct mcallister_system
     UINT m_num_particles_to_render = 0;
     static constexpr int m_max_particles_per_frame = 1024;
     simulation_mode m_simulation_mode = simulation_mode::gpu;
-    rendering_mode m_rendering_mode = rendering_mode::billboard;
+    rendering_mode m_rendering_mode = rendering_mode::point;
     std::array<D3D12_VERTEX_BUFFER_VIEW, 4> m_VBVs = {};
 
 private:

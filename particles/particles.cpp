@@ -82,6 +82,12 @@ s_internal particle::mcallister_system *particle_system = nullptr;
 s_internal std::array<particle::aligned_particle_aos, particle_system->m_max_particles_per_frame> *particle_data = nullptr;
 s_internal bool should_reset_particles = false;
 s_internal UINT num_particle_systems = 1;
+s_internal model_data cb_model = {};
+s_internal float rot_x = 0.f;
+s_internal float rot_y = 0.f;
+s_internal float rot_z = 0.f;
+s_internal XMVECTOR particle_translation = XMVectorSet(0.f, 0.f, 0.f, 0.f);
+s_internal XMVECTOR particle_scale = XMVectorSet(1.f, 1.f, 1.f, 0.f);
 
 // Indirect commands data
 struct draw_indirect_command
@@ -96,16 +102,18 @@ s_internal ID3D12CommandSignature *drawing_cmd_sig = nullptr;
 
 struct simulation_indirect_command
 {
-    D3D12_GPU_VIRTUAL_ADDRESS particle_input_uav;
-    D3D12_GPU_VIRTUAL_ADDRESS particle_output_uav;
     D3D12_GPU_VIRTUAL_ADDRESS pass_data_cbv;
+    D3D12_GPU_VIRTUAL_ADDRESS particle_output_uav;
+    D3D12_GPU_VIRTUAL_ADDRESS particle_input_uav;
     D3D12_DISPATCH_ARGUMENTS dispatch_args;
 };
 
 s_internal ID3D12Resource *indirect_simulation_output_default = nullptr;
 s_internal ID3D12Resource *indirect_simulation_output_upload = nullptr;
 s_internal ID3D12Resource *indirect_simulation_input_default = nullptr;
-s_internal ID3D12Resource *indirect_culling_input_upload = nullptr;
+s_internal ID3D12Resource *indirect_simulation_input_upload = nullptr;
+s_internal ID3D12Resource *indirect_simulation_swap_default = nullptr;
+s_internal ID3D12Resource *indirect_simulation_swap_upload = nullptr;
 s_internal ID3D12CommandSignature *particle_sim_cmd_sig = nullptr;
 
 // Camera
@@ -256,12 +264,18 @@ extern "C" __declspec(dllexport) bool initialize()
 
     create_default_buffer(device, main_cmdlist,
                           (void *)&simulation_cmd, indirect_arg_buffer_size,
-                          &indirect_culling_input_upload, &indirect_simulation_input_default, "simulation_input_args");
+                          &indirect_simulation_input_upload, &indirect_simulation_input_default, "simulation_input_args");
 
     int tmp = 0;
     create_default_buffer(device, main_cmdlist,
                           (void *)&tmp, indirect_arg_buffer_size,
                           &indirect_simulation_output_upload, &indirect_simulation_output_default, "simulation_output_args", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+
+    simulation_cmd.particle_input_uav = particle_output_default->GetGPUVirtualAddress();
+    simulation_cmd.particle_output_uav = particle_input_default->GetGPUVirtualAddress();
+    create_default_buffer(device, main_cmdlist,
+                          (void *)&simulation_cmd, indirect_arg_buffer_size,
+                          &indirect_simulation_swap_upload, &indirect_simulation_swap_default, "simulation_swapped_args");
 
     D3D12_INDIRECT_ARGUMENT_DESC simulation_indirect_args[4] = {};
     simulation_indirect_args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT_BUFFER_VIEW;
@@ -285,6 +299,10 @@ extern "C" __declspec(dllexport) bool initialize()
                                          D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT));
     main_cmdlist->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
                                          indirect_simulation_input_default,
+                                         D3D12_RESOURCE_STATE_COPY_DEST,
+                                         D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT));
+    main_cmdlist->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+                                         indirect_simulation_swap_default,
                                          D3D12_RESOURCE_STATE_COPY_DEST,
                                          D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT));
     main_cmdlist->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
@@ -316,6 +334,22 @@ extern "C" __declspec(dllexport) bool update_and_render()
     // Update camera
     update_camera_pos();
     cam.update_view();
+
+    // Update model data
+    // Translation vector
+    XMMATRIX translation = XMMatrixTranslationFromVector(particle_translation);
+    // Rotation matrix
+    XMMATRIX rotation_x = XMMatrixRotationAxis(XMVectorSet(1.f, 0.f, 0.f, 0.f), rot_x);
+    XMMATRIX rotation_y = XMMatrixRotationAxis(XMVectorSet(0.f, 1.f, 0.f, 0.f), rot_y);
+    XMMATRIX rotation_z = XMMatrixRotationAxis(XMVectorSet(0.f, 0.f, 1.f, 0.f), rot_z);
+    XMMATRIX rotation = rotation_x * rotation_y * rotation_z;
+    // Scaling vector
+    XMMATRIX scale = XMMatrixScalingFromVector(particle_scale);
+
+    XMMATRIX transform = scale * (rotation * translation);
+    //XMMATRIX transform = translation;
+    XMStoreFloat4x4(&cb_model.transform, XMMatrixTranspose(transform));
+    frame->cb_transforms_upload->copy_data(0, (void *)&cb_model);
 
     // Update pass data
     XMStoreFloat3(&cb_pass.eye_pos, cam.position);
@@ -413,7 +447,6 @@ extern "C" __declspec(dllexport) bool update_and_render()
     main_cmdlist->IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_LINELIST);
     main_cmdlist->DrawIndexedInstanced(floor_grid.index_count, 1, 0, 0, 0);
 
-
     // Draw particles
     query->start(gpu_particles_time_query);
     main_cmdlist->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
@@ -445,6 +478,8 @@ extern "C" __declspec(dllexport) bool update_and_render()
                                                  D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT));
 
             main_cmdlist->SetPipelineState(particle_sim_pso);
+            main_cmdlist->SetComputeRootConstantBufferView(7, frame->cb_transforms_upload->m_uploadbuffer->GetGPUVirtualAddress());
+            main_cmdlist->SetGraphicsRootConstantBufferView(7, frame->cb_transforms_upload->m_uploadbuffer->GetGPUVirtualAddress());
             main_cmdlist->ExecuteIndirect(particle_sim_cmd_sig, num_particle_systems, indirect_simulation_output_default, 0, nullptr, 0);
 
             // Indirect particle drawing
@@ -472,6 +507,11 @@ extern "C" __declspec(dllexport) bool update_and_render()
             }
 
             main_cmdlist->ExecuteIndirect(drawing_cmd_sig, num_particle_systems, indirect_drawing_default, 0, nullptr, 0);
+
+            // Swap command buffers
+            auto *tmp = indirect_simulation_input_default;
+            indirect_simulation_input_default = indirect_simulation_swap_default;
+            indirect_simulation_swap_default = tmp;
         }
         else
         {
@@ -522,13 +562,15 @@ extern "C" __declspec(dllexport) bool update_and_render()
             main_cmdlist->IASetVertexBuffers(0, 1, &vbv);
             main_cmdlist->DrawInstanced(particle_system->m_max_particles_per_frame, 1, 0, 0);
 
-            // Swap read and write buffers
-            // this makes the pipeline use our previously transformed particles to draw
-            // while the compute pipeline is simulating the next batch of particles
-            particle_output_default = particle_input_default;
-
             query->stop(gpu_particles_draw_query);
         }
+
+        // Swap read and write buffers
+        // this makes the pipeline use our previously transformed particles to draw
+        // while the compute pipeline is simulating the next batch of particles
+        auto *tmp = particle_output_default;
+        particle_output_default = particle_input_default;
+        particle_input_default = tmp;
     }
 
     if (particle_system->m_simulation_mode == particle::simulation_mode::cpu)
@@ -629,6 +671,13 @@ void imgui_update()
 
     imgui_combobox((int *)&particle_system->m_rendering_mode, {"Point", "Billboard", "Overdraw"}, "Particle rendering mode");
     imgui_combobox((int *)&particle_system->m_simulation_mode, {"CPU", "GPU"}, "Particle simulation mode");
+
+    // Transform
+    ImGui::SliderFloat3("Scale", particle_scale.m128_f32, 0.f, 20.f);
+    ImGui::SliderFloat3("Translation", particle_translation.m128_f32, -20.f, 20.f);
+    ImGui::SliderAngle("Rotation x", &rot_x);
+    ImGui::SliderAngle("Rotation y", &rot_y);
+    ImGui::SliderAngle("Rotation z", &rot_z);
 }
 
 void update_camera_pos()
@@ -690,37 +739,43 @@ void create_shader_objects()
     params.push_back(param_pass);
 
     // (table) Texture2D srv_fire_texture : register(t0);
+    // (table) Texture2D cb_material : register(b1);
     CD3DX12_DESCRIPTOR_RANGE1 mat_ranges[2];
     mat_ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC);
     mat_ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 1, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC);
     CD3DX12_ROOT_PARAMETER1 param_mat;
-    param_mat.InitAsDescriptorTable(_countof(mat_ranges), mat_ranges, D3D12_SHADER_VISIBILITY_ALL);
+    param_mat.InitAsDescriptorTable(_countof(mat_ranges), mat_ranges);
     params.push_back(param_mat);
 
     // (root) RWStructuredBuffer<particle> : register(u0);
     CD3DX12_ROOT_PARAMETER1 param_output_particle = {};
-    param_output_particle.InitAsUnorderedAccessView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE, D3D12_SHADER_VISIBILITY_ALL);
+    param_output_particle.InitAsUnorderedAccessView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE);
     params.push_back(param_output_particle);
 
     // (root) RWStructuredBuffer<particle> : register(u1);
     CD3DX12_ROOT_PARAMETER1 param_input_particle = {};
-    param_input_particle.InitAsUnorderedAccessView(1, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE, D3D12_SHADER_VISIBILITY_ALL);
+    param_input_particle.InitAsUnorderedAccessView(1, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE);
     params.push_back(param_input_particle);
 
     // (root) StructuredBuffer<indirect_command> : register(t1);
     CD3DX12_ROOT_PARAMETER1 param_in_commands = {};
-    param_in_commands.InitAsShaderResourceView(1, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE, D3D12_SHADER_VISIBILITY_ALL);
+    param_in_commands.InitAsShaderResourceView(1, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC);
     params.push_back(param_in_commands);
 
     // (root) RWStructuredBuffer<indirect_command> : register(u2);
     CD3DX12_ROOT_PARAMETER1 param_out_commands = {};
-    param_out_commands.InitAsUnorderedAccessView(2, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE, D3D12_SHADER_VISIBILITY_ALL);
+    param_out_commands.InitAsUnorderedAccessView(2, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE);
     params.push_back(param_out_commands);
 
-    // (root) ConstantBuffer<command_info> : register(b0);
+    // (root) ConstantBuffer<command_info> : register(b2);
     CD3DX12_ROOT_PARAMETER1 param_cmd_info;
     param_cmd_info.InitAsConstants(1, 2);
     params.push_back(param_cmd_info);
+
+    // (root) ConstantBuffer<model> : register(b3);
+    CD3DX12_ROOT_PARAMETER1 param_model;
+    param_model.InitAsConstantBufferView(3, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC);
+    params.push_back(param_model);
 
     // Samplers
     std::vector<CD3DX12_STATIC_SAMPLER_DESC> samplers = {};

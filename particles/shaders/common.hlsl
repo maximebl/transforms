@@ -10,6 +10,12 @@ struct pass_data
 };
 ConstantBuffer<pass_data> cb_pass : register(b0);
 
+struct model
+{
+   matrix model; 
+};
+ConstantBuffer<model> cb_object : register(b3);
+
 // Random number generator
 static uint rng_state;
 
