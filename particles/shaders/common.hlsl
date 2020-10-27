@@ -12,7 +12,7 @@ ConstantBuffer<pass_data> cb_pass : register(b0);
 
 struct model
 {
-   matrix model; 
+    matrix model;
 };
 ConstantBuffer<model> cb_object : register(b3);
 
@@ -40,3 +40,11 @@ float rand()
     // Generate a random float in [0, 1)...
     return float(rng_state) * (1.0 / 4294967296.0);
 }
+
+struct bounding_box
+{
+    float3 position[8];
+};
+
+// We use an append buffer because many different dispatch calls will append to it
+AppendStructuredBuffer<bounding_box> bounds : register(u3);

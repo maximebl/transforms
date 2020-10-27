@@ -24,10 +24,22 @@
     <ClInclude Include="frame_resource.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="mcallister_system.h">
+    <ClInclude Include="DDSTextureLoader12.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="DDSTextureLoader12.h">
+    <ClInclude Include="particle_system_gpu.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="particle_system_oop.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="transform.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="particle.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\shader_shared_constants.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
@@ -41,10 +53,16 @@
     <ClCompile Include="frame_resource.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="mcallister_system.cpp">
+    <ClCompile Include="DDSTextureLoader12.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="DDSTextureLoader12.cpp">
+    <ClCompile Include="particle_system_gpu.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="particle_system_oop.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="transform.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
@@ -58,5 +76,6 @@
     <FxCompile Include="shaders\particle_sim.hlsl" />
     <FxCompile Include="shaders\floorgrid.hlsl" />
     <FxCompile Include="shaders\commands_filter.hlsl" />
+    <FxCompile Include="shaders\bounds.hlsl" />
   </ItemGroup>
 </Project>

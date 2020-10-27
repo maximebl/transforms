@@ -1,31 +1,30 @@
 #include "pch.h"
-#include "mcallister_system.h"
+#include "particle_system_oop.h"
 #include <algorithm>
-#include "../PerformanceAPI_capi.h"
 
 namespace particle
 {
 
 // System
-mcallister_system::mcallister_system(source *src, std::vector<action *> actions, ID3D12Device *device)
+particle_system_oop::particle_system_oop(source *src, std::vector<action *> actions, ID3D12Device *device)
 {
     m_source.reset(src);
 
     for (action *act : actions)
         m_actions.emplace_back(act);
 
-    m_vertexbuffer_stride = m_max_particles_per_frame * particle_byte_size;
+    m_vertexbuffer_stride = m_max_particles_per_frame * byte_size;
     m_num_particles_total = m_max_particles_per_frame * NUM_BACK_BUFFERS;
 
-    m_vertex_upload_resource = new upload_buffer(device, m_num_particles_total, particle_byte_size, false, "particles_vertices");
+    m_vertex_upload_resource = new upload_buffer(device, m_num_particles_total, byte_size, false, "particles_vertices");
 }
 
-mcallister_system::~mcallister_system()
+particle_system_oop::~particle_system_oop()
 {
     delete m_vertex_upload_resource;
 }
 
-void mcallister_system::reset(particle ptr)
+void particle_system_oop::reset(particle ptr)
 {
     ptr->age = 0.f;
     ptr->size = 1.f;
@@ -34,78 +33,71 @@ void mcallister_system::reset(particle ptr)
     m_num_particles_alive = 0;
 }
 
-void mcallister_system::simulate(float dt, frame_resource *frame)
+void particle_system_oop::simulate(float dt, frame_resource *frame)
 {
-    if (m_simulation_mode == simulation_mode::gpu)
+    particle current_particle = reinterpret_cast<particle>(frame->particle_vb_range);
+    particle current_particle_start = current_particle;
+    particle current_particle_end = current_particle + m_num_particles_alive;
+    particle max_particle_end = current_particle + m_max_particles_per_frame;
+
+    for (size_t i = 0; i < m_num_particles_alive; i++)
     {
+        current_particle_start[i] = m_previous_particle[i];
+
+        // Run actions
+        for (auto &act : m_actions)
+        {
+            act.get()->apply(dt, current_particle_start + i);
+        }
     }
 
-    if (m_simulation_mode == simulation_mode::cpu)
+    // Spawn new particles
+    current_particle_end = m_source->apply(dt, current_particle_end, max_particle_end);
+
+    m_num_particles_alive = current_particle_end - current_particle_start;
+    m_previous_particle = current_particle;
+
+    // Partition the pool, reconcile the emitted with the timed-out particles
+    current_particle_end = std::partition(current_particle_start, current_particle_end,
+                                          [](auto &v) { return v.age <= 100.f; });
+
+    m_num_particles_to_render = UINT(current_particle_end - current_particle_start);
+
+    if (m_num_particles_to_render > 0)
     {
-        particle current_particle = reinterpret_cast<particle>(frame->particle_vb_range);
-        particle current_particle_start = current_particle;
-        particle current_particle_end = current_particle + m_num_particles_alive;
-        particle max_particle_end = current_particle + m_max_particles_per_frame;
+        // Create VBVs from particle pointers
+        size_t particle_gpu_data_start = m_vertex_upload_resource->m_uploadbuffer->GetGPUVirtualAddress();
+        UINT particle_vb_size = (UINT)m_vertexbuffer_stride;
+        UINT particle_vb_stride = (UINT)byte_size;
+        BYTE *particle_cpu_data_start = m_vertex_upload_resource->m_mapped_data;
 
-        for (size_t i = 0; i < m_num_particles_alive; i++)
-        {
-            current_particle_start[i] = m_previous_particle[i];
+        // Position data
+        size_t position_offset = (BYTE *)&current_particle_start->position - particle_cpu_data_start;
+        m_VBVs[0].BufferLocation = particle_gpu_data_start + position_offset;
+        m_VBVs[0].SizeInBytes = particle_vb_size - offsetof(aligned_aos, position);
+        m_VBVs[0].StrideInBytes = particle_vb_stride;
 
-            // Run actions
-            for (auto &act : m_actions)
-            {
-                act.get()->apply(dt, current_particle_start + i);
-            }
-        }
+        // Size data
+        size_t size_offset = (BYTE *)&current_particle_start->size - particle_cpu_data_start;
+        m_VBVs[1].BufferLocation = particle_gpu_data_start + size_offset;
+        m_VBVs[1].SizeInBytes = particle_vb_size - offsetof(aligned_aos, size);
+        m_VBVs[1].StrideInBytes = particle_vb_stride;
 
-        // Spawn new particles
-        current_particle_end = m_source->apply(dt, current_particle_end, max_particle_end);
+        // Velocity data
+        size_t velocity_offset = (BYTE *)&current_particle_start->velocity - particle_cpu_data_start;
+        m_VBVs[2].BufferLocation = particle_gpu_data_start + velocity_offset;
+        m_VBVs[2].SizeInBytes = particle_vb_size - offsetof(aligned_aos, velocity);
+        m_VBVs[2].StrideInBytes = particle_vb_stride;
 
-        m_num_particles_alive = current_particle_end - current_particle_start;
-        m_previous_particle = current_particle;
-
-        // Partition the pool, reconcile the emitted with the timed-out particles
-        current_particle_end = std::partition(current_particle_start, current_particle_end,
-                                              [](auto &v) { return v.age <= 100.f; });
-
-        m_num_particles_to_render = UINT(current_particle_end - current_particle_start);
-
-        if (m_num_particles_to_render > 0)
-        {
-            // Create VBVs from particle pointers
-            size_t particle_gpu_data_start = m_vertex_upload_resource->m_uploadbuffer->GetGPUVirtualAddress();
-            UINT particle_vb_size = (UINT)m_vertexbuffer_stride;
-            UINT particle_vb_stride = (UINT)particle_byte_size;
-            BYTE *particle_cpu_data_start = m_vertex_upload_resource->m_mapped_data;
-
-            // Position data
-            size_t position_offset = (BYTE *)&current_particle_start->position - particle_cpu_data_start;
-            m_VBVs[0].BufferLocation = particle_gpu_data_start + position_offset;
-            m_VBVs[0].SizeInBytes = particle_vb_size - offsetof(aligned_particle_aos, position);
-            m_VBVs[0].StrideInBytes = particle_vb_stride;
-
-            // Size data
-            size_t size_offset = (BYTE *)&current_particle_start->size - particle_cpu_data_start;
-            m_VBVs[1].BufferLocation = particle_gpu_data_start + size_offset;
-            m_VBVs[1].SizeInBytes = particle_vb_size - offsetof(aligned_particle_aos, size);
-            m_VBVs[1].StrideInBytes = particle_vb_stride;
-
-            // Velocity data
-            size_t velocity_offset = (BYTE *)&current_particle_start->velocity - particle_cpu_data_start;
-            m_VBVs[2].BufferLocation = particle_gpu_data_start + velocity_offset;
-            m_VBVs[2].SizeInBytes = particle_vb_size - offsetof(aligned_particle_aos, velocity);
-            m_VBVs[2].StrideInBytes = particle_vb_stride;
-
-            // Age data
-            size_t age_offset = (BYTE *)&current_particle_start->age - particle_cpu_data_start;
-            m_VBVs[3].BufferLocation = particle_gpu_data_start + age_offset;
-            m_VBVs[3].SizeInBytes = particle_vb_size - offsetof(aligned_particle_aos, age);
-            m_VBVs[3].StrideInBytes = particle_vb_stride;
-        }
+        // Age data
+        size_t age_offset = (BYTE *)&current_particle_start->age - particle_cpu_data_start;
+        m_VBVs[3].BufferLocation = particle_gpu_data_start + age_offset;
+        m_VBVs[3].SizeInBytes = particle_vb_size - offsetof(aligned_aos, age);
+        m_VBVs[3].StrideInBytes = particle_vb_stride;
     }
 }
 
-BYTE *mcallister_system::get_frame_partition(int frame_index)
+BYTE *particle_system_oop::get_frame_partition(int frame_index)
 {
     BYTE *ptr = m_vertex_upload_resource->m_mapped_data;
     return ptr + (m_vertexbuffer_stride * frame_index);

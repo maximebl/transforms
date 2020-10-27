@@ -55,3 +55,8 @@ COMMON_API std::string hr_msg(HRESULT hr);
             (p) = NULL;     \
         }                   \
     } while ((void)0, 0)
+
+COMMON_API inline size_t align_up(size_t value, size_t alignment)
+{
+    return ((value + (alignment - 1)) & ~(alignment - 1));
+}

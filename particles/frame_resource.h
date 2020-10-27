@@ -1,6 +1,7 @@
 #pragma once
 #include <gpu_interface.h>
 #include "math_helpers.h"
+#include "../main/gpu_interface2.h"
 
 struct pass_data
 {
@@ -24,6 +25,11 @@ struct model_data
     DirectX::XMFLOAT4X4 transform = Identity4x4();
 };
 
+struct box_positions
+{
+    DirectX::XMFLOAT3 positions[8];
+};
+
 class frame_cmd
 {
 public:
@@ -39,11 +45,11 @@ public:
 class frame_resource : public frame_cmd
 {
 public:
-    frame_resource(ID3D12Device *device, size_t frame_index, BYTE* particle_data);
+    frame_resource(ID3D12Device *device, size_t frame_index, BYTE* particle_data, UINT num_particle_systems);
     ~frame_resource();
 
     BYTE *particle_vb_range = nullptr;
     std::unique_ptr<upload_buffer> cb_pass_upload = nullptr;
     std::unique_ptr<upload_buffer> cb_material_upload = nullptr;
-    std::unique_ptr<upload_buffer> cb_transforms_upload = nullptr;
+    std::unique_ptr<upload_buffer2<model_data>> cb_transforms_upload = nullptr;
 };

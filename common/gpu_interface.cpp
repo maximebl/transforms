@@ -32,7 +32,7 @@ device_resources::device_resources() : last_signaled_fence_value(0)
     {
         D3D12_COMMAND_QUEUE_DESC cmd_queue_desc;
         cmd_queue_desc.NodeMask = DEFAULT_NODE;
-        cmd_queue_desc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+        cmd_queue_desc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_HIGH;
         cmd_queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
         cmd_queue_desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
         check_hr(device->CreateCommandQueue(&cmd_queue_desc, IID_PPV_ARGS(&cmd_queue)));
@@ -338,6 +338,7 @@ void device_resources::end_capture()
         graphics_analysis->EndCapture();
 }
 
+
 void device_resources::present(bool is_vsync)
 {
     UINT sync_interval = is_vsync ? 1 : 0;
@@ -600,6 +601,7 @@ void create_default_buffer(ID3D12Device *device,
         byte_size);
 }
 
+
 void create_mesh_data(ID3D12Device *device, ID3D12GraphicsCommandList *cmd_list, const char *name,
                       size_t vertex_stride, size_t vertex_count, void *vertex_data,
                       size_t index_stride, size_t index_count, void *index_data,
@@ -651,15 +653,9 @@ void create_mesh_data(ID3D12Device *device, ID3D12GraphicsCommandList *cmd_list,
                                      D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER));
 }
 
-size_t align_up(size_t value, size_t alignment)
-{
-    return ((value + (alignment - 1)) & ~(alignment - 1));
-}
-
 upload_buffer::upload_buffer(ID3D12Device *device, size_t max_element_count, size_t element_byte_size, bool is_constant_buffer, const char *name)
     : m_element_byte_size(element_byte_size), m_max_element_count((UINT)max_element_count)
 {
-
     m_buffer_size = m_element_byte_size * max_element_count;
 
     if (is_constant_buffer)

@@ -90,7 +90,6 @@ COMMON_API void set_viewport_rects(ID3D12GraphicsCommandList *cmd_list);
 COMMON_API D3D12_DEPTH_STENCIL_DESC create_outline_dss();
 COMMON_API D3D12_DEPTH_STENCIL_DESC create_stencil_dss();
 COMMON_API bool compile_shader(const wchar_t *file, const wchar_t *entry, shader_type type, ID3DBlob **blob);
-COMMON_API size_t align_up(size_t value, size_t alignment);
 COMMON_API void create_default_buffer(ID3D12Device *device, ID3D12GraphicsCommandList *cmd_list,
                                       const void *data, size_t byte_size,
                                       ID3D12Resource **upload_resource, ID3D12Resource **default_resource, const char *name, D3D12_RESOURCE_FLAGS flags = D3D12_RESOURCE_FLAG_NONE);
@@ -116,9 +115,92 @@ public:
     size_t m_element_byte_size = 0;
 };
 
-class COMMON_API device_resources
+
+//#ifdef DX12_ENABLE_DEBUG_LAYER
+//struct COMMON_API debug_utils
+//{
+//    debug_utils(ID3D12Device *device) : m_last_signaled_fence_value(0), m_device(device)
+//    {
+//        check_hr(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COPY, IID_PPV_ARGS(&m_debug_cpy_alloc)));
+//        check_hr(device->CreateCommandList(DEFAULT_NODE, D3D12_COMMAND_LIST_TYPE_COPY, m_debug_cpy_alloc, nullptr, IID_PPV_ARGS(&m_debug_cpy_cmdlist)));
+//
+//        D3D12_COMMAND_QUEUE_DESC queue_desc;
+//        queue_desc.NodeMask = DEFAULT_NODE;
+//        queue_desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+//        queue_desc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+//        queue_desc.Type = D3D12_COMMAND_LIST_TYPE_COPY;
+//        check_hr(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&m_debug_cpy_queue)));
+//
+//        check_hr(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence)));
+//
+//        m_fence_event = CreateEventEx(nullptr, NULL, NULL, EVENT_ALL_ACCESS);
+//    }
+//
+//    ~debug_utils()
+//    {
+//    }
+//
+//    ID3D12Device *m_device;
+//    ID3D12CommandAllocator *m_debug_cpy_alloc;
+//    ID3D12GraphicsCommandList *m_debug_cpy_cmdlist;
+//    ID3D12CommandQueue *m_debug_cpy_queue;
+//    ID3D12Fence *m_fence;
+//    HANDLE m_fence_event;
+//    UINT64 m_last_signaled_fence_value;
+//
+//    template <typename T>
+//    std::vector<T> flush_and_readback(ID3D12Resource *target, D3D12_RESOURCE_STATES target_state, size_t count)
+//    {
+//        m_debug_cpy_cmdlist->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(target,
+//                                                                                      target_state,
+//                                                                                      D3D12_RESOURCE_STATE_COPY_SOURCE));
+//
+//        // Create readback resource
+//        ID3D12Resource *rb = nullptr;
+//        check_hr(m_device->CreateCommittedResource(
+//            &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK),
+//            D3D12_HEAP_FLAG_NONE,
+//            &CD3DX12_RESOURCE_DESC::Buffer(sizeof(T) * count),
+//            D3D12_RESOURCE_STATE_COPY_DEST,
+//            nullptr,
+//            IID_PPV_ARGS(&rb)));
+//
+//        // Copy target default resource into readback resource
+//        m_debug_cpy_cmdlist->CopyResource(rb, target);
+//
+//        // Map readback resource to CPU pointer
+//        T *target_data;
+//        rb->Map(0, &CD3DX12_RANGE(0, count * sizeof(T)), (void **)&target_data);
+//
+//        m_debug_cpy_cmdlist->Close();
+//        m_debug_cpy_queue->ExecuteCommandLists(1, (ID3D12CommandList *const *)&m_debug_cpy_cmdlist);
+//
+//        // Flush command queue
+//        m_debug_cpy_queue->Signal(m_fence, ++m_last_signaled_fence_value);
+//        m_fence->SetEventOnCompletion(m_last_signaled_fence_value, m_fence_event);
+//        UINT64 fence_value = m_fence->GetCompletedValue();
+//        if (fence_value <= m_last_signaled_fence_value)
+//            WaitForSingleObject(m_fence_event, INFINITE);
+//
+//        // Delete rb buffer
+//        //rb->Unmap(0, nullptr);
+//        //m_device->Evict(1, &rb);
+//        //safe_release(rb);
+//
+//        std::vector<T> results(count);
+//
+//        for (size_t i = 0; i < count; i++)
+//        {
+//            results[i] = target_data[i];
+//        }
+//
+//        return results;
+//    }
+//};
+//#endif
+
+struct COMMON_API device_resources
 {
-public:
     device_resources();
     ~device_resources();
 
@@ -170,6 +252,7 @@ public:
     UINT64 last_signaled_fence_value = 0;
     UINT backbuffer_index = 0; //Gets updated after each call to Present()
 
+#ifdef DX12_ENABLE_DEBUG_LAYER
     // Debugging
     IDXGraphicsAnalysis *graphics_analysis;
     //const int max_debug_lines = 1000;
@@ -187,4 +270,48 @@ public:
     //ID3D12PipelineState *line_pso = nullptr;
     //ID3DBlob *debugfx_blob_vs = nullptr;
     //ID3DBlob *debugfx_blob_ps = nullptr;
+
+    template <typename T>
+    std::vector<T> flush_and_readback(ID3D12GraphicsCommandList *cmd_list, ID3D12CommandAllocator *alloc, ID3D12Resource *target, D3D12_RESOURCE_STATES target_state, size_t count)
+    {
+        cmd_list->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+                                         target,
+                                         target_state,
+                                         D3D12_RESOURCE_STATE_COPY_SOURCE));
+        // Create readback resource
+        ID3D12Resource *rb = nullptr;
+        check_hr(device->CreateCommittedResource(
+            &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK),
+            D3D12_HEAP_FLAG_NONE,
+            &CD3DX12_RESOURCE_DESC::Buffer(sizeof(T) * count),
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            nullptr,
+            IID_PPV_ARGS(&rb)));
+        NAME_D3D12_OBJECT(rb);
+
+        cmd_list->CopyResource(rb, target);
+
+        T *target_data;
+        rb->Map(0, &CD3DX12_RANGE(0, count * sizeof(T)), (void **)&target_data);
+        rb->Unmap(0, nullptr);
+
+        cmd_list->Close();
+        cmd_queue->ExecuteCommandLists(1, (ID3D12CommandList *const *)&cmd_list);
+        flush_cmd_queue();
+
+        alloc->Reset();
+        cmd_list->Reset(alloc, nullptr);
+
+        safe_release(rb);
+
+        std::vector<T> results(count);
+
+        for (size_t i = 0; i < count; i++)
+        {
+            results[i] = target_data[i];
+        }
+
+        return results;
+    }
+#endif
 };

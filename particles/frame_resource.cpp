@@ -6,7 +6,7 @@ frame_cmd::~frame_cmd()
     safe_release(cmd_alloc);
 }
 
-frame_resource::frame_resource(ID3D12Device *device, size_t frame_index, BYTE *particle_data)
+frame_resource::frame_resource(ID3D12Device *device, size_t frame_index, BYTE *particle_data, UINT num_particle_systems)
 {
     check_hr(device->CreateCommandAllocator(
         D3D12_COMMAND_LIST_TYPE_DIRECT,
@@ -17,7 +17,7 @@ frame_resource::frame_resource(ID3D12Device *device, size_t frame_index, BYTE *p
 
     cb_pass_upload = std::make_unique<upload_buffer>(device, 1, sizeof(pass_data), true, "pass_data");
     cb_material_upload = std::make_unique<upload_buffer>(device, 1, sizeof(material_data), true, "material_data");
-    cb_transforms_upload = std::make_unique<upload_buffer>(device, 1, sizeof(model_data), true, "model_data");
+    cb_transforms_upload = std::make_unique<upload_buffer2<model_data>>(device, num_particle_systems,  true);
 }
 
 frame_resource::~frame_resource()

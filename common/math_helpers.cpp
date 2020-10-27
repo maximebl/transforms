@@ -48,10 +48,11 @@ DirectX::XMFLOAT3X3 Identity3x3()
     return I;
 }
 
-float random_float(float first, float second)
+float random_float(float min, float max)
 {
-    std::random_device rd;                                                 // obtain a random number from hardware
-    std::mt19937 gen(rd());                                                // seed the generator
-    std::uniform_real_distribution<> distr((double)first, (double)second); // define the range
-    return (float)distr(gen);
+    static std::random_device rd{};
+    static std::mt19937 gen{rd()};
+
+    std::uniform_real_distribution<float> distr{min, max};
+    return distr(gen);
 }
