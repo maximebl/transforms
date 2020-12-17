@@ -14,7 +14,7 @@
 
 using namespace DirectX;
 
-camera cam = camera( XMConvertToRadians(45.f), XMVectorSet(0.f, 0.f, -10.f, 1.f));
+camera main_cam = camera();
 
 extern "C" __declspec(dllexport) bool update_and_render();
 extern "C" __declspec(dllexport) void resize(int width, int height);
@@ -524,87 +524,87 @@ DWORD __stdcall select_and_load_model(void *param)
 
 s_internal void update_camera()
 {
-    ImGui::SliderFloat4("Right direction", cam.right.m128_f32, -1.f, 1.f);
-    ImGui::SameLine();
-    if (ImGui::Button("Reset right direction"))
-        cam.right = XMVectorSet(1.f, 0.f, 0.f, 0.f);
+    //ImGui::SliderFloat4("Right direction", cam.right.m128_f32, -1.f, 1.f);
+    //ImGui::SameLine();
+    //if (ImGui::Button("Reset right direction"))
+    //    cam.right = XMVectorSet(1.f, 0.f, 0.f, 0.f);
 
-    ImGui::SliderFloat4("Up direction", cam.up.m128_f32, -1.f, 1.f);
-    ImGui::SameLine();
-    if (ImGui::Button("Reset up direction"))
-        cam.up = XMVectorSet(0.f, 1.f, 0.f, 0.f);
+    //ImGui::SliderFloat4("Up direction", cam.up.m128_f32, -1.f, 1.f);
+    //ImGui::SameLine();
+    //if (ImGui::Button("Reset up direction"))
+    //    cam.up = XMVectorSet(0.f, 1.f, 0.f, 0.f);
 
-    ImGui::SliderFloat4("Forward direction", cam.forward.m128_f32, -1.f, 1.f);
-    ImGui::SameLine();
-    if (ImGui::Button("Reset forward direction"))
-        cam.forward = XMVectorSet(0.f, 0.f, 1.f, 0.f);
+    //ImGui::SliderFloat4("Forward direction", cam.forward.m128_f32, -1.f, 1.f);
+    //ImGui::SameLine();
+    //if (ImGui::Button("Reset forward direction"))
+    //    cam.forward = XMVectorSet(0.f, 0.f, 1.f, 0.f);
 
-    ImGui::SliderFloat4("Camera position", cam.position.m128_f32, -150.f, 150.f);
-    ImGui::SameLine();
-    if (ImGui::Button("Reset camera position"))
-    {
-        cam.position = cam.m_start_pos;
-    }
+    //ImGui::SliderFloat4("Camera position", cam.position.m128_f32, -150.f, 150.f);
+    //ImGui::SameLine();
+    //if (ImGui::Button("Reset camera position"))
+    //{
+    //    cam.position = cam.m_start_pos;
+    //}
 
-    ImGui::SliderFloat("Camera roll", &cam.roll, -180.f, +180.f);
-    ImGui::SliderFloat("Camera pitch", &cam.pitch, -180.f, +180.f);
-    ImGui::SliderFloat("Camera yaw", &cam.yaw, -180.f, +180.f);
+    //ImGui::SliderFloat("Camera roll", &cam.roll, -180.f, +180.f);
+    //ImGui::SliderFloat("Camera pitch", &cam.pitch, -180.f, +180.f);
+    //ImGui::SliderFloat("Camera yaw", &cam.yaw, -180.f, +180.f);
 
-    cam.forward = XMVector3Normalize(cam.forward);
+    //cam.forward = XMVector3Normalize(cam.forward);
 
-    for (render_item &ri : render_items)
-    {
-        for (instance &inst : ri.instances)
-            if (inst.is_selected == true)
-            {
-                cam.orbit_target_pos.m128_f32[0] = inst.shader_data.world._41;
-                cam.orbit_target_pos.m128_f32[1] = inst.shader_data.world._42;
-                cam.orbit_target_pos.m128_f32[2] = inst.shader_data.world._43;
-                cam.orbit_target_pos.m128_f32[3] = inst.shader_data.world._44;
-                ImGui::SliderFloat4("Orbit target position", cam.orbit_target_pos.m128_f32, -50.f, 50.f);
-            }
-    }
+    //for (render_item &ri : render_items)
+    //{
+    //    for (instance &inst : ri.instances)
+    //        if (inst.is_selected == true)
+    //        {
+    //            cam.orbit_target_pos.m128_f32[0] = inst.shader_data.world._41;
+    //            cam.orbit_target_pos.m128_f32[1] = inst.shader_data.world._42;
+    //            cam.orbit_target_pos.m128_f32[2] = inst.shader_data.world._43;
+    //            cam.orbit_target_pos.m128_f32[3] = inst.shader_data.world._44;
+    //            ImGui::SliderFloat4("Orbit target position", cam.orbit_target_pos.m128_f32, -50.f, 50.f);
+    //        }
+    //}
 
-    XMVECTOR s = XMVectorReplicate(0.02f);
-    if (GetAsyncKeyState('E'))
-    {
-        cam.position = XMVectorMultiplyAdd(-s, cam.up, cam.position);
-    }
+    //XMVECTOR s = XMVectorReplicate(0.02f);
+    //if (GetAsyncKeyState('E'))
+    //{
+    //    cam.position = XMVectorMultiplyAdd(-s, cam.up, cam.position);
+    //}
 
-    if (GetAsyncKeyState('Q'))
-    {
-        cam.position = XMVectorMultiplyAdd(s, cam.up, cam.position);
-    }
+    //if (GetAsyncKeyState('Q'))
+    //{
+    //    cam.position = XMVectorMultiplyAdd(s, cam.up, cam.position);
+    //}
 
-    if (GetAsyncKeyState('W'))
-    {
-        cam.position = XMVectorMultiplyAdd(s, cam.forward, cam.position);
-    }
-    if (GetAsyncKeyState('S'))
-    {
-        cam.position = XMVectorMultiplyAdd(-s, cam.forward, cam.position);
-    }
-    if (GetAsyncKeyState('A'))
-    {
-        cam.position = XMVectorMultiplyAdd(-s, cam.right, cam.position);
-    }
-    if (GetAsyncKeyState('D'))
-    {
-        cam.position = XMVectorMultiplyAdd(s, cam.right, cam.position);
-    }
+    //if (GetAsyncKeyState('W'))
+    //{
+    //    cam.position = XMVectorMultiplyAdd(s, cam.forward, cam.position);
+    //}
+    //if (GetAsyncKeyState('S'))
+    //{
+    //    cam.position = XMVectorMultiplyAdd(-s, cam.forward, cam.position);
+    //}
+    //if (GetAsyncKeyState('A'))
+    //{
+    //    cam.position = XMVectorMultiplyAdd(-s, cam.right, cam.position);
+    //}
+    //if (GetAsyncKeyState('D'))
+    //{
+    //    cam.position = XMVectorMultiplyAdd(s, cam.right, cam.position);
+    //}
 
-    //XMMATRIX view = T;
-    //XMStoreFloat4x4(&pass.view, view);
+    ////XMMATRIX view = T;
+    ////XMStoreFloat4x4(&pass.view, view);
 
-    // projection matrix
-    //float aspect_ratio = (float)g_hwnd_width / (float)g_hwnd_height;
-    //XMMATRIX proj = XMMatrixTranspose(XMMatrixPerspectiveFovLH(0.25f * XM_PI, aspect_ratio, 1.0f, 1000.0f));
-    //XMStoreFloat4x4(&pass.proj, proj);
+    //// projection matrix
+    ////float aspect_ratio = (float)g_hwnd_width / (float)g_hwnd_height;
+    ////XMMATRIX proj = XMMatrixTranspose(XMMatrixPerspectiveFovLH(0.25f * XM_PI, aspect_ratio, 1.0f, 1000.0f));
+    ////XMStoreFloat4x4(&pass.proj, proj);
 
-    cam.update_view();
-    XMStoreFloat4x4(&pass.view, cam.view);
-    XMStoreFloat4x4(&pass.proj, XMMatrixTranspose(cam.proj));
-    frame->cb_pass_upload->copy_data(0, (void *)&pass);
+    //cam.update_view();
+    //XMStoreFloat4x4(&pass.view, cam.view);
+    //XMStoreFloat4x4(&pass.proj, XMMatrixTranspose(cam.proj));
+    //frame->cb_pass_upload->copy_data(0, (void *)&pass);
 }
 
 struct tree_item
@@ -882,7 +882,7 @@ void imgui_update()
 {
     if (GetAsyncKeyState(VK_ESCAPE))
     {
-        cam.orbit_target_pos = cam.default_orbit_target;
+        //cam.orbit_target_pos = cam.default_orbit_target;
 
         for (render_item &ri : render_items)
         {
@@ -1165,7 +1165,7 @@ extern "C" __declspec(dllexport) void wndproc(UINT msg, WPARAM wParam, LPARAM lP
         {
             if (ImGui::IsMouseDown(ImGuiMouseButton_Left))
             {
-                cam.update_yaw_pitch(XMFLOAT2(ImGui::GetMousePos().x, ImGui::GetMousePos().y),
+                main_cam.update_yaw_pitch(XMFLOAT2(ImGui::GetMousePos().x, ImGui::GetMousePos().y),
                                      XMFLOAT2(last_mouse_pos.x, last_mouse_pos.y));
             }
         }

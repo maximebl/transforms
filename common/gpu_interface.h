@@ -6,6 +6,8 @@
 
 constexpr int NUM_BACK_BUFFERS = 3;
 constexpr int DEFAULT_NODE = 0;
+constexpr int MAX_DEBUG_VERTICES = 1000;
+constexpr int MAX_DEBUG_INDICES = 5000;
 
 #if defined(_DEBUG) || defined(DBG)
 inline void set_name(ID3D12Object *object, const char *name)
@@ -114,7 +116,6 @@ public:
     BYTE *m_mapped_data = nullptr;
     size_t m_element_byte_size = 0;
 };
-
 
 //#ifdef DX12_ENABLE_DEBUG_LAYER
 //struct COMMON_API debug_utils
@@ -252,9 +253,16 @@ struct COMMON_API device_resources
     UINT64 last_signaled_fence_value = 0;
     UINT backbuffer_index = 0; //Gets updated after each call to Present()
 
-#ifdef DX12_ENABLE_DEBUG_LAYER
     // Debugging
     IDXGraphicsAnalysis *graphics_analysis;
+    ID3D12GraphicsCommandList *readback_list = nullptr;
+    ID3D12CommandAllocator *readback_alloc = nullptr;
+    ID3D12Resource *debug_readback_resource = nullptr;
+    ID3D12CommandQueue *debug_copy_queue = nullptr;
+    UINT64 copy_fence_value = 0;
+    ID3D12Fence *copy_fence = nullptr;
+    HANDLE copy_fence_event = nullptr;
+
     //const int max_debug_lines = 1000;
     //upload_buffer *debug_lines_upload = nullptr;
     //D3D12_VERTEX_BUFFER_VIEW debug_lines_vbv = {};
@@ -272,7 +280,44 @@ struct COMMON_API device_resources
     //ID3DBlob *debugfx_blob_ps = nullptr;
 
     template <typename T>
-    std::vector<T> flush_and_readback(ID3D12GraphicsCommandList *cmd_list, ID3D12CommandAllocator *alloc, ID3D12Resource *target, D3D12_RESOURCE_STATES target_state, size_t count)
+    std::vector<T> readback(ID3D12Resource *target, size_t count = 1)
+    {
+        size_t bytes_to_copy = sizeof(T) * count;
+        readback_list->CopyBufferRegion(debug_readback_resource, 0, target, 0, bytes_to_copy);
+
+        T *target_data;
+        debug_readback_resource->Map(0, &CD3DX12_RANGE(0, count * sizeof(T)), (void **)&target_data);
+
+        readback_list->Close();
+        debug_copy_queue->ExecuteCommandLists(1, (ID3D12CommandList *const *)&readback_list);
+
+        // Flush copy queue
+        debug_copy_queue->Signal(copy_fence, ++copy_fence_value);
+        copy_fence->SetEventOnCompletion(copy_fence_value, copy_fence_event);
+
+        if (copy_fence_value > copy_fence->GetCompletedValue())
+        {
+            WaitForSingleObject(copy_fence_event, INFINITE);
+        }
+
+        // Read results
+        std::vector<T> results(count);
+
+        for (size_t i = 0; i < count; i++)
+        {
+            results[i] = target_data[i];
+        }
+
+        // Prepare for next readback
+        readback_alloc->Reset();
+        readback_list->Reset(readback_alloc, nullptr);
+        debug_readback_resource->Unmap(0, nullptr);
+
+        return results;
+    }
+
+    template <typename T>
+    std::vector<T> flush_and_readback(ID3D12GraphicsCommandList *cmd_list, ID3D12CommandAllocator *alloc, ID3D12Resource *target, D3D12_RESOURCE_STATES target_state, size_t count = 1)
     {
         cmd_list->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
                                          target,
@@ -313,5 +358,4 @@ struct COMMON_API device_resources
 
         return results;
     }
-#endif
 };

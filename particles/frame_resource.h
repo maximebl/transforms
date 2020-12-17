@@ -11,7 +11,9 @@ struct pass_data
     float time = 0.f;
     float delta_time = 0.f;
     float aspect_ratio = 0.f;
-    float vert_cotangent = 0.f;
+    float _pad0 = 0.f;
+    float _pad1 = 0.f;
+    DirectX::XMFLOAT4 frustum_planes[6] = {};
 };
 
 struct material_data
@@ -25,9 +27,16 @@ struct model_data
     DirectX::XMFLOAT4X4 transform = Identity4x4();
 };
 
-struct box_positions
+struct bounding_box
 {
-    DirectX::XMFLOAT3 positions[8];
+    DirectX::XMFLOAT3 extents;
+    DirectX::XMFLOAT4 center;
+    DirectX::XMFLOAT3 positions[8]; // No need for padding when using arrays
+};
+
+struct physics
+{
+    float drag_coefficients[2] = {1.05f, 1.05f};
 };
 
 class frame_cmd
@@ -45,11 +54,13 @@ public:
 class frame_resource : public frame_cmd
 {
 public:
-    frame_resource(ID3D12Device *device, size_t frame_index, BYTE* particle_data, UINT num_particle_systems);
+    frame_resource(ID3D12Device *device, size_t frame_index, BYTE *particle_data, UINT num_transforms);
     ~frame_resource();
 
     BYTE *particle_vb_range = nullptr;
-    std::unique_ptr<upload_buffer> cb_pass_upload = nullptr;
+    std::unique_ptr<upload_buffer2<pass_data>> cb_pass_upload = nullptr;
     std::unique_ptr<upload_buffer> cb_material_upload = nullptr;
     std::unique_ptr<upload_buffer2<model_data>> cb_transforms_upload = nullptr;
+    std::unique_ptr<upload_buffer2<position_color>> cb_debug_vertices_upload = nullptr;
+    std::unique_ptr<upload_buffer2<physics>> cb_physics = nullptr;
 };

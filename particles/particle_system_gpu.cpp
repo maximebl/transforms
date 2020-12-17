@@ -5,10 +5,11 @@
 particle_system_gpu::particle_system_gpu(ID3D12Device *device,
                                          ID3D12GraphicsCommandList *cmd_list,
                                          std::vector<particle::aligned_aos> *particle_data,
-                                         D3D12_GPU_VIRTUAL_ADDRESS transform,
-                                         UINT max_particle_count,
-                                         UINT64 bounds_indices_gpu_va,
-                                         UINT64 bounds_vertices_gpu_va)
+                                         D3D12_GPU_VIRTUAL_ADDRESS transform_cbv,
+                                         D3D12_GPU_VIRTUAL_ADDRESS physics_cbv,
+                                         D3D12_GPU_VIRTUAL_ADDRESS bounds_indices_gpu_va,
+                                         D3D12_GPU_VIRTUAL_ADDRESS bounds_vertices_gpu_va,
+                                         UINT max_particle_count)
     : m_max_particle_count(max_particle_count)
 {
     // Create the particle buffers
@@ -21,6 +22,13 @@ particle_system_gpu::particle_system_gpu(ID3D12Device *device,
     create_default_buffer(device, cmd_list, particle_data->data(), buffer_size,
                           &m_input_upload, &m_input_default, "particle_input_data", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
+    // Reset buffers
+    create_default_buffer(device, cmd_list, particle_data->data(), buffer_size,
+                          &m_output_upload, &m_output_reset, "particle_output_reset_data");
+
+    create_default_buffer(device, cmd_list, particle_data->data(), buffer_size,
+                          &m_input_upload, &m_input_reset, "particle_input_reset_data");
+
     // Create indirect drawing command objects for particles
     D3D12_DRAW_ARGUMENTS draw_args = {};
     draw_args.InstanceCount = 1;
@@ -32,7 +40,7 @@ particle_system_gpu::particle_system_gpu(ID3D12Device *device,
     indirect_cmd.vbv.BufferLocation = m_output_default->GetGPUVirtualAddress();
     indirect_cmd.vbv.SizeInBytes = m_max_particle_count * particle::byte_size;
     indirect_cmd.vbv.StrideInBytes = particle::byte_size;
-    indirect_cmd.transform = transform;
+    indirect_cmd.transform_cbv = transform_cbv;
     indirect_cmd.draw_args = draw_args;
 
     size_t indirect_arg_buffer_size = sizeof(draw_indirect_command2);
@@ -52,7 +60,7 @@ particle_system_gpu::particle_system_gpu(ID3D12Device *device,
     indirect_bounds_draw_cmd.vbv.SizeInBytes = sizeof(DirectX::XMFLOAT3) * 8;
     indirect_bounds_draw_cmd.vbv.StrideInBytes = sizeof(DirectX::XMFLOAT3);
 
-    indirect_bounds_draw_cmd.transform = transform;
+    indirect_bounds_draw_cmd.transform_cbv = transform_cbv;
 
     indirect_bounds_draw_cmd.draw_args.BaseVertexLocation = 0;
     indirect_bounds_draw_cmd.draw_args.IndexCountPerInstance = 24;
@@ -64,12 +72,26 @@ particle_system_gpu::particle_system_gpu(ID3D12Device *device,
                           (void *)&indirect_bounds_draw_cmd, indirect_arg_buffer_size,
                           &m_indirect_drawing_bounds_upload, &m_indirect_drawing_bounds_default, "particle_bounds_draw_args");
 
-    // Create the indirect simulation command objects for particles
+    // Create the indirect calculation of particle bounds
     D3D12_DISPATCH_ARGUMENTS dispatch_args = {1, 1, 1};
+    indirect_arg_buffer_size = sizeof(bounds_calc_indirect_command);
+    bounds_calc_indirect_command indirect_bounds_calc_cmd = {};
+    indirect_bounds_calc_cmd.particle_output_uav = m_output_default->GetGPUVirtualAddress();
+    indirect_bounds_calc_cmd.transform_cbv = transform_cbv;
+    indirect_bounds_calc_cmd.dispatch_args = dispatch_args;
+
+    create_default_buffer(device, cmd_list,
+                          (void *)&indirect_bounds_calc_cmd, indirect_arg_buffer_size,
+                          &m_indirect_bounds_calc_upload, &m_indirect_bounds_calc_default, "particle_bounds_calc_args");
+
+    // Create the indirect simulation command objects for particles
+    dispatch_args = {1, 1, 1};
     simulation_indirect_command simulation_cmd = {};
     simulation_cmd.dispatch_args = dispatch_args;
     simulation_cmd.particle_input_uav = m_input_default->GetGPUVirtualAddress();
     simulation_cmd.particle_output_uav = m_output_default->GetGPUVirtualAddress();
+    simulation_cmd.physics_cbv = physics_cbv;
+    simulation_cmd.dt_accum = 0.f;
 
     indirect_arg_buffer_size = sizeof(simulation_indirect_command);
 
@@ -86,4 +108,10 @@ particle_system_gpu::particle_system_gpu(ID3D12Device *device,
 
 particle_system_gpu::~particle_system_gpu()
 {
+}
+
+void particle_system_gpu::reset(ID3D12GraphicsCommandList *cmd_list)
+{
+    cmd_list->CopyResource(m_input_default, m_input_reset);
+    cmd_list->CopyResource(m_output_default, m_output_reset);
 }

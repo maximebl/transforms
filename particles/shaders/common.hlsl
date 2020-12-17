@@ -6,7 +6,7 @@ struct pass_data
     float time;
     float delta_time;
     float aspect_ratio;
-    float vert_cotangent;
+    float4 frustum_planes[6];
 };
 ConstantBuffer<pass_data> cb_pass : register(b0);
 
@@ -43,8 +43,11 @@ float rand()
 
 struct bounding_box
 {
+    float3 extents;
+    float4 center;
     float3 position[8];
 };
 
 // We use an append buffer because many different dispatch calls will append to it
 AppendStructuredBuffer<bounding_box> bounds : register(u3);
+StructuredBuffer<bounding_box> bounds_reader : register(t5);

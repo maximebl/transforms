@@ -97,6 +97,7 @@
       <SupportJustMyCode>false</SupportJustMyCode>
       <AdditionalIncludeDirectories>$(SolutionDir)common;$(SolutionDir)imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp14</LanguageStandard>
+      <ShowIncludes>false</ShowIncludes>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>

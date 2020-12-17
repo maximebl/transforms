@@ -49,8 +49,6 @@ void gpu_query::start(std::string query_name)
     UINT query_index = m_queries[query_name].index;
     UINT buffer_start = ((*m_backbuffer_index) * NUM_SAMPLES) + (query_index * m_queries_stride);
 
-    //UINT buffer_start = ((*m_backbuffer_index) * NUM_SAMPLES) + (m_queries[query_name].index * m_queries_stride);
-
     m_queries[query_name].buffer_start = buffer_start;
     m_cmd_list->EndQuery(m_query_heap, D3D12_QUERY_TYPE_TIMESTAMP, buffer_start);
 }

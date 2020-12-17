@@ -1,58 +1,112 @@
-#include "pch.h"
 #include "camera.h"
 
 using namespace DirectX;
 
-camera::camera(float fov_angle, DirectX::FXMVECTOR position) : m_start_pos(position), position(position), m_fov_angle(fov_angle)
+camera::camera(transform in_transform,
+               float in_near,
+               float in_far,
+               float in_fov_angle,
+               float in_aspect_ratio)
+    : m_transform(in_transform),
+      m_vfov_angle(in_fov_angle),
+      m_aspect_ratio(in_aspect_ratio),
+      m_near(in_near),
+      m_far(in_far)
 {
-    if (g_aspect_ratio > 0.f)
-        proj = XMMatrixPerspectiveFovLH(fov_angle, g_aspect_ratio, 1.0f, 1000.0f);
-
-    m_start_pos = position;
-
-    right = DirectX::XMVectorSet(1.f, 0.f, 0.f, 0.f);
-    up = DirectX::XMVectorSet(0.f, 1.f, 0.f, 0.f);
-    forward = DirectX::XMVectorSet(0.f, 0.f, 1.f, 0.f);
+    XMVECTOR forward = XMLoadFloat3(&m_transform.m_forward);
+    XMVECTOR position = XMLoadFloat3(&m_transform.m_translation);
 
     XMVECTOR scaled_cam_dir = XMVectorScale(forward, 15.f);
-    default_orbit_target = position + scaled_cam_dir;
-    orbit_target_pos = default_orbit_target;
+
+    calc_projection();
+    viewspace_frustum_planes();
+}
+
+void camera::update_position()
+{
+    XMVECTOR right = XMLoadFloat3(&m_transform.m_right);
+    XMVECTOR up = XMLoadFloat3(&m_transform.m_up);
+    XMVECTOR forward = XMLoadFloat3(&m_transform.m_forward);
+    XMVECTOR position = XMLoadFloat3(&m_transform.m_translation);
+    XMVECTOR step = XMVectorReplicate(0.030f);
+
+    if (GetAsyncKeyState('E'))
+    {
+        position = XMVectorMultiplyAdd(-step, up, position);
+    }
+    if (GetAsyncKeyState('Q'))
+    {
+        position = XMVectorMultiplyAdd(step, up, position);
+    }
+
+    if (GetAsyncKeyState('W'))
+    {
+        position = XMVectorMultiplyAdd(step, forward, position);
+    }
+    if (GetAsyncKeyState('S'))
+    {
+        position = XMVectorMultiplyAdd(-step, forward, position);
+    }
+    if (GetAsyncKeyState('A'))
+    {
+        position = XMVectorMultiplyAdd(-step, right, position);
+    }
+    if (GetAsyncKeyState('D'))
+    {
+        position = XMVectorMultiplyAdd(step, right, position);
+    }
+
+    XMStoreFloat3(&m_transform.m_translation, position);
 }
 
 void camera::update_view()
 {
-    up = XMVector3Normalize(up);
+    XMVECTOR position = XMLoadFloat3(&m_transform.m_translation);
+    XMVECTOR right = XMLoadFloat3(&m_transform.m_right);
+    XMVECTOR up = XMLoadFloat3(&m_transform.m_up);
+    XMVECTOR forward = XMLoadFloat3(&m_transform.m_forward);
+
+    // Renormalize camera axis
     forward = XMVector3Normalize(forward);
     right = XMVector3Cross(up, forward);
     up = XMVector3Normalize(XMVector3Cross(forward, right));
 
+    // Camera rotation
+    XMMATRIX R;
+    R.r[0] = right;
+    R.r[1] = up;
+    R.r[2] = forward;
+    R.r[3] = XMVectorSet(0.f, 0.f, 0.f, 1.f);
+
     // Camera translation
-    float x = -XMVectorGetX(XMVector3Dot(right, position));
-    float y = -XMVectorGetX(XMVector3Dot(up, position));
-    float z = -XMVectorGetX(XMVector3Dot(forward, position));
+    XMMATRIX P;
+    P = XMMatrixTranslationFromVector(position);
 
-    XMMATRIX T;
-    T.r[0] = right;
-    T.r[0].m128_f32[3] = x;
+    // The view matrix is the inverted camera transform
+    XMMATRIX V;
+    V = R * P;                                       // Order of multiplication is reversed
+    V = XMMatrixInverse(&XMMatrixDeterminant(V), V); // because we invert the result
+    V = XMMatrixTranspose(V);
 
-    T.r[1] = up;
-    T.r[1].m128_f32[3] = y;
-
-    T.r[2] = forward;
-    T.r[2].m128_f32[3] = z;
-
-    T.r[3] = XMVectorSet(0.f, 0.f, 0.f, 1.f);
-
-    view = T;
+    XMStoreFloat4x4(&m_inv_view, V);
+    XMStoreFloat3(&m_transform.m_right, right);
+    XMStoreFloat3(&m_transform.m_up, up);
+    XMStoreFloat3(&m_transform.m_forward, forward);
 }
 
-void camera::update_projection()
+void camera::calc_projection()
 {
-    proj = XMMatrixPerspectiveFovLH(m_fov_angle, g_aspect_ratio, 1.0f, 1000.0f);
+    XMStoreFloat4x4(&m_proj, XMMatrixPerspectiveFovLH(m_vfov_angle, m_aspect_ratio, m_near, m_far));
+    m_proj_dist = m_proj(1, 1);
 }
 
 void camera::update_yaw_pitch(XMFLOAT2 current_mouse_pos, XMFLOAT2 last_mouse_pos)
 {
+    XMVECTOR position = XMLoadFloat3(&m_transform.m_translation);
+    XMVECTOR right = XMLoadFloat3(&m_transform.m_right);
+    XMVECTOR up = XMLoadFloat3(&m_transform.m_up);
+    XMVECTOR forward = XMLoadFloat3(&m_transform.m_forward);
+
     float dx = XMConvertToRadians(0.5f * (current_mouse_pos.x - last_mouse_pos.x));
     float dy = XMConvertToRadians(0.5f * (current_mouse_pos.y - last_mouse_pos.y));
 
@@ -60,12 +114,16 @@ void camera::update_yaw_pitch(XMFLOAT2 current_mouse_pos, XMFLOAT2 last_mouse_po
     {
         XMVECTOR start_cam_pos = position;
 
-        // Get the direction vector from the camera position to the target position (position - point = direction)
+        XMVECTOR scaled_cam_dir = XMVectorScale(forward, 15.f);
+        XMVECTOR orbit_target_pos = start_cam_pos + scaled_cam_dir;
+
+        // Get the direction vector from the camera position to the target position
         XMVECTOR cam_to_target_dir = orbit_target_pos - position;
 
         // Translate to target position (direction + point = point)
         position = cam_to_target_dir + position;
 
+        // Rotate camera axis
         XMMATRIX to_yaw = XMMatrixRotationY(dx);
         XMMATRIX to_pitch = XMMatrixRotationAxis(right, dy);
         XMMATRIX to_rot = to_pitch * to_yaw; // apply global yaw to local pitch
@@ -99,4 +157,124 @@ void camera::update_yaw_pitch(XMFLOAT2 current_mouse_pos, XMFLOAT2 last_mouse_po
         forward = XMVector3TransformNormal(forward, pitch);
         up = XMVector3TransformNormal(up, pitch);
     }
+
+    XMStoreFloat3(&m_transform.m_translation, position);
+    XMStoreFloat3(&m_transform.m_right, right);
+    XMStoreFloat3(&m_transform.m_up, up);
+    XMStoreFloat3(&m_transform.m_forward, forward);
 }
+
+std::vector<position_color> camera::calc_frustum_vertices()
+{
+    std::vector<position_color> vertices(0);
+    vertices.reserve(12);
+
+    // Far plane
+    auto far_plane_corners = calc_plane_vertices(m_far, XMFLOAT4(1.f, 1.f, 1.f, 0.25f));
+    vertices.insert(vertices.end(),
+                    far_plane_corners.begin(),
+                    far_plane_corners.end());
+
+    // Projection plane
+    auto projection_plane_corners = calc_plane_vertices(m_proj(1, 1), XMFLOAT4(1.f, 1.f, 1.f, 0.25f));
+    vertices.insert(vertices.end(),
+                    projection_plane_corners.begin(),
+                    projection_plane_corners.end());
+
+    // Near plane
+    auto near_plane_corners = calc_plane_vertices(m_near, XMFLOAT4(1.f, 1.f, 1.f, 0.25f));
+    vertices.insert(vertices.end(),
+                    near_plane_corners.begin(),
+                    near_plane_corners.end());
+
+    return vertices;
+}
+
+std::vector<position_color> camera::calc_plane_vertices(float dist_from_origin, XMFLOAT4 color)
+{
+    XMVECTOR translation = XMLoadFloat3(&m_transform.m_translation); // C
+    XMVECTOR right = XMLoadFloat3(&m_transform.m_right);             // x
+    XMVECTOR up = XMLoadFloat3(&m_transform.m_up);                   // y
+    XMVECTOR forward = XMLoadFloat3(&m_transform.m_forward);         // z
+
+    float z_scale = dist_from_origin;
+    float y_scale = z_scale / m_proj_dist;
+    float x_scale = y_scale * m_aspect_ratio;
+
+    XMVECTOR scaled_right = right * x_scale;
+    XMVECTOR scaled_up = up * y_scale;
+    XMVECTOR scaled_forward = forward * z_scale;
+
+    position_color bottom_right = {}; // q0
+    position_color top_right = {};    // q1
+    position_color top_left = {};     // q2
+    position_color bottom_left = {};  // q3
+    XMStoreFloat3(&bottom_right.position, scaled_right - scaled_up + scaled_forward + translation);
+    XMStoreFloat3(&top_right.position, scaled_right + scaled_up + scaled_forward + translation);
+    XMStoreFloat3(&top_left.position, -scaled_right + scaled_up + scaled_forward + translation);
+    XMStoreFloat3(&bottom_left.position, -scaled_right - scaled_up + scaled_forward + translation);
+
+    bottom_right.color = color;
+    top_right.color = color;
+    top_left.color = color;
+    bottom_left.color = color;
+
+    return {bottom_right, top_right, top_left, bottom_left};
+}
+
+void camera::viewspace_frustum_planes()
+{
+    XMStoreFloat4(&m_near_plane, XMVectorSet(0.f, 0.f, 1.f, -m_near));
+    XMStoreFloat4(&m_far_plane, XMVectorSet(0.f, 0.f, -1.f, m_far));
+    XMStoreFloat4(&m_left_plane, XMVector4Normalize(XMVectorSet(m_proj_dist, 0.f, m_aspect_ratio, 0.f)));
+    XMStoreFloat4(&m_right_plane, XMVector4Normalize(XMVectorSet(-m_proj_dist, 0.f, m_aspect_ratio, 0.f)));
+    XMStoreFloat4(&m_top_plane, XMVector4Normalize(XMVectorSet(0.f, -m_proj_dist, 1.f, 0.f)));
+    XMStoreFloat4(&m_bottom_plane, XMVector4Normalize(XMVectorSet(0.f, m_proj_dist, 1.f, 0.f)));
+}
+
+//std::vector<position_color> camera::calc_frustum_plane_vertices()
+//{
+//    std::vector<position_color> plane_corners(0);
+//    constexpr int num_corners = 4;
+//    constexpr int num_planes = 2;
+//    plane_corners.reserve(num_corners * num_planes);
+//
+//    position_color top_left_corner;
+//    position_color top_right_corner;
+//    position_color bottom_left_corner;
+//    position_color bottom_right_corner;
+//
+//    // Far plane
+//    plane_intersect(&top_left_corner, m_far_plane, m_left_plane, m_top_plane);
+//    plane_intersect(&top_right_corner, m_far_plane, m_right_plane, m_top_plane);
+//    plane_intersect(&bottom_left_corner, m_far_plane, m_left_plane, m_bottom_plane);
+//    plane_intersect(&bottom_right_corner, m_far_plane, m_right_plane, m_bottom_plane);
+//    auto far_plane_corners = {bottom_right_corner, top_right_corner, top_left_corner, bottom_left_corner};
+//    plane_corners.insert(plane_corners.end(),
+//                         far_plane_corners.begin(), far_plane_corners.end());
+//
+//    // left plane
+//    plane_intersect(&top_left_corner, m_left_plane, m_near_plane, m_top_plane);
+//    plane_intersect(&top_right_corner, m_left_plane, m_far_plane, m_top_plane);
+//    plane_intersect(&bottom_left_corner, m_left_plane, m_near_plane, m_bottom_plane);
+//    plane_intersect(&bottom_right_corner, m_left_plane, m_far_plane, m_bottom_plane);
+//    auto left_plane_corners = {bottom_right_corner, top_right_corner, top_left_corner, bottom_left_corner};
+//    plane_corners.insert(plane_corners.end(),
+//                         left_plane_corners.begin(), left_plane_corners.end());
+//
+//    return plane_corners;
+//}
+//
+//bool camera::plane_intersect(position_color *point, XMFLOAT4 plane1, XMFLOAT4 plane2, XMFLOAT4 plane3)
+//{
+//    XMVECTOR p1 = XMLoadFloat4(&plane1);
+//    XMVECTOR p2 = XMLoadFloat4(&plane2);
+//    XMVECTOR p3 = XMLoadFloat4(&plane3);
+//
+//    XMVECTOR n1xn2 = XMVector3Cross(p1, p2);
+//    float det = XMVectorGetX(XMVector3Dot(n1xn2, p3));
+//
+//    XMStoreFloat3(&point->position, (XMVector3Cross(p3, p2) * p1.m128_f32[3] + XMVector3Cross(p1, p3) * p2.m128_f32[3] - n1xn2 * p3.m128_f32[3]) / det);
+//
+//    return true;
+//}

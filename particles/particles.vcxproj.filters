@@ -33,9 +33,6 @@
     <ClInclude Include="particle_system_oop.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="transform.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="particle.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -62,9 +59,6 @@
     <ClCompile Include="particle_system_oop.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="transform.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
@@ -77,5 +71,8 @@
     <FxCompile Include="shaders\floorgrid.hlsl" />
     <FxCompile Include="shaders\commands_filter.hlsl" />
     <FxCompile Include="shaders\bounds.hlsl" />
+    <FxCompile Include="shaders\calculate_bounds.hlsl" />
+    <FxCompile Include="shaders\debug.hlsl" />
+    <FxCompile Include="shaders\debug_plane.hlsl" />
   </ItemGroup>
 </Project>

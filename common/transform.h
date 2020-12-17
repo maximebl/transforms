@@ -1,11 +1,17 @@
 #pragma once
-#include "common.h"
+#include <DirectXMath.h>
 
 struct transform
 {
-    transform() : m_translation(0.f, 0.f, 0.f),
-                  m_rotation(0.f, 0.f, 0.f),
-                  m_scale(1.f, 1.f, 1.f) {}
+    transform(DirectX::XMFLOAT3 in_translation = DirectX::XMFLOAT3(0.f, 0.f, 0.f),
+              DirectX::XMFLOAT3 in_rotation = DirectX::XMFLOAT3(0.f, 0.f, 0.f),
+              DirectX::XMFLOAT3 in_scale = DirectX::XMFLOAT3(1.f, 1.f, 1.f))
+        : m_translation(in_translation),
+          m_rotation(in_rotation),
+          m_scale(in_scale)
+    {
+        update_world();
+    }
 
     void set_translation(float x, float y, float z)
     {
@@ -35,17 +41,28 @@ struct transform
     {
         using namespace DirectX;
 
+        XMMATRIX right_mat = XMMatrixRotationX(m_rotation.x);
+        XMMATRIX up_mat = XMMatrixRotationY(m_rotation.y);
+        XMMATRIX forward_mat = XMMatrixRotationZ(m_rotation.z);
+        XMMATRIX rotation = right_mat * up_mat * forward_mat;
+
         XMMATRIX transform;
         XMMATRIX scale = XMMatrixScaling(m_scale.x, m_scale.y, m_scale.z);
-        XMMATRIX rotation = XMMatrixRotationX(m_rotation.x) * XMMatrixRotationY(m_rotation.y) * XMMatrixRotationZ(m_rotation.z);
         XMMATRIX translation = XMMatrixTranslation(m_translation.x, m_translation.y, m_translation.z);
         transform = (scale * rotation) * translation;
+
+        XMStoreFloat3(&m_right, right_mat.r[0]);
+        XMStoreFloat3(&m_up, up_mat.r[1]);
+        XMStoreFloat3(&m_forward, forward_mat.r[2]);
         XMStoreFloat4x4(&m_world, transform);
         XMStoreFloat4x4(&m_world_transposed, XMMatrixTranspose(transform));
     }
 
-    DirectX::XMFLOAT3 m_translation;
+    DirectX::XMFLOAT3 m_right;
+    DirectX::XMFLOAT3 m_up;
+    DirectX::XMFLOAT3 m_forward;
     DirectX::XMFLOAT3 m_rotation;
+    DirectX::XMFLOAT3 m_translation;
     DirectX::XMFLOAT3 m_scale;
     DirectX::XMFLOAT4X4 m_world;
     DirectX::XMFLOAT4X4 m_world_transposed;

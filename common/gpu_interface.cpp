@@ -39,6 +39,34 @@ device_resources::device_resources() : last_signaled_fence_value(0)
         NAME_D3D12_OBJECT(cmd_queue);
     }
 
+    // create debug objects
+    {
+        check_hr(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COPY, IID_PPV_ARGS(&readback_alloc)));
+        NAME_D3D12_OBJECT(readback_alloc);
+        check_hr(device->CreateCommandList(DEFAULT_NODE, D3D12_COMMAND_LIST_TYPE_COPY, readback_alloc, nullptr, IID_PPV_ARGS(&readback_list)));
+        NAME_D3D12_OBJECT(readback_list);
+
+        check_hr(device->CreateCommittedResource(
+            &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK),
+            D3D12_HEAP_FLAG_NONE,
+            &CD3DX12_RESOURCE_DESC::Buffer(D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT),
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            nullptr,
+            IID_PPV_ARGS(&debug_readback_resource)));
+        NAME_D3D12_OBJECT(debug_readback_resource);
+
+        D3D12_COMMAND_QUEUE_DESC cmd_queue_desc = {};
+        cmd_queue_desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+        cmd_queue_desc.NodeMask = DEFAULT_NODE;
+        cmd_queue_desc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+        cmd_queue_desc.Type = D3D12_COMMAND_LIST_TYPE_COPY;
+        check_hr(device->CreateCommandQueue(&cmd_queue_desc, IID_PPV_ARGS(&debug_copy_queue)));
+        NAME_D3D12_OBJECT(debug_copy_queue);
+
+        check_hr(device->CreateFence(copy_fence_value, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&copy_fence)));
+        copy_fence_event = CreateEventEx(nullptr, NULL, NULL, EVENT_ALL_ACCESS);
+    }
+
     check_hr(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)));
     NAME_D3D12_OBJECT(fence);
 
@@ -338,7 +366,6 @@ void device_resources::end_capture()
         graphics_analysis->EndCapture();
 }
 
-
 void device_resources::present(bool is_vsync)
 {
     UINT sync_interval = is_vsync ? 1 : 0;
@@ -591,7 +618,8 @@ void create_default_buffer(ID3D12Device *device,
     BYTE *mapped_data = nullptr;
     D3D12_RANGE range = {};
     p_upload_resource->Map(0, &range, (void **)&mapped_data);
-    memcpy((void *)mapped_data, data, byte_size);
+    if (data)
+        memcpy((void *)mapped_data, data, byte_size);
 
     p_upload_resource->Unmap(0, &range);
 
@@ -600,7 +628,6 @@ void create_default_buffer(ID3D12Device *device,
         p_upload_resource, 0,
         byte_size);
 }
-
 
 void create_mesh_data(ID3D12Device *device, ID3D12GraphicsCommandList *cmd_list, const char *name,
                       size_t vertex_stride, size_t vertex_count, void *vertex_data,

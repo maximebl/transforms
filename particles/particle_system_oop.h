@@ -145,11 +145,11 @@ struct particle_system_oop
     BYTE *get_frame_partition(int frame_index);
     upload_buffer *m_vertex_upload_resource = nullptr;
     size_t m_vertexbuffer_stride = 0;
-    size_t m_num_particles_total = 0;
+    size_t m_num_particles_total = 1024;
     size_t m_num_particles_alive = 0;
     UINT m_num_particles_to_render = 0;
     static constexpr int m_max_particles_per_frame = 1024;
-    simulation_mode m_simulation_mode = simulation_mode::gpu;
+    simulation_mode m_simulation_mode = simulation_mode::cpu;
     rendering_mode m_rendering_mode = rendering_mode::point;
     std::array<D3D12_VERTEX_BUFFER_VIEW, 4> m_VBVs = {};
 

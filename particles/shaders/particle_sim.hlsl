@@ -1,5 +1,19 @@
 #include "common.hlsl"
 
+struct physics
+{
+    float drag_coeff_k1;
+    float drag_coeff_k2;
+};
+ConstantBuffer<physics> cb_physics : register(b4);
+
+struct per_particle_system_constants
+{
+    float dt_accum;
+    int missed_frames;
+};
+ConstantBuffer<per_particle_system_constants> cb_ps_data : register(b5);
+
 // input layout
 struct vertex_in
 {
@@ -19,11 +33,7 @@ struct particle
 RWStructuredBuffer<particle> output_particle : register(u0);
 RWStructuredBuffer<particle> input_particle : register(u1);
 
-#define flt_max 3.402823E+38
-groupshared float3 v_min = float3(flt_max, flt_max, flt_max);
-groupshared float3 v_max = float3(-flt_max, -flt_max, -flt_max);
-
-#define threads_count 1024
+#define threads_count (512)
 [numthreads(threads_count, 1, 1)]
 void CS(uint3 thread_id : SV_DispatchThreadID)
 {
@@ -34,87 +44,78 @@ void CS(uint3 thread_id : SV_DispatchThreadID)
 
     particle p = input_particle[index];
 
-    // Transform to homogenous clip space for the purpose of frustum culling
-    //float4 hpos = float4(0.f, 0.f, 0.f, 0.f);
-    //matrix view_proj = mul(cb_pass.view, cb_pass.proj);
-    //view_proj = mul(cb_object.model, view_proj);
-    //hpos = mul(float4(p.position.xyz, 1.f), view_proj);
-
-    // Frustum culling
-    // Let's the shader skip calculating the actions if the particle is out of the view frustum
-    //float height = p.size * cb_pass.vert_cotangent;
-    //float width = height * cb_pass.aspect_ratio;
-    //float3 extent = abs(hpos.xyz) - float3(width, height, 0);
-
-    //// Frustum cull by checking of any of xyz are outside [-w, w].
-    //float bound = max(max(0.f, extent.x), max(extent.y, extent.z));
-    //if (bound > hpos.w)
-    //    return;
-
-    // Run actions on the original particle
+    float damping = 0.90f;
+    float3 gravity = float3(0.f, -9.8f, 0.f);
     float dt = cb_pass.delta_time;
+    float3 last_velocity = float3(0.f, 0.f, 0.f);
 
-    // Size
-    p.size = 1.f;
+    if (cb_ps_data.dt_accum > 0.f)
+    {
+        //dt += cb_ps_data.dt_accum;
 
-    // Gravity
-    p.velocity += float3(0.f, 0.00f, 0.f) * dt;
+        // Fast forward velocity n frames
+        int missed_frames = (int) floor(cb_ps_data.dt_accum / (1.f / 144.f));
+        while (missed_frames > 0)
+        {
+            float3 acceleration = gravity;
+            last_velocity = p.velocity;
+    // Drag
+            float3 force = p.velocity;
 
-    // Move
-    p.position += p.velocity * dt;
+            float k1 = cb_physics.drag_coeff_k1;
+            float k2 = cb_physics.drag_coeff_k2;
 
-    // Output the particle with the actions applied to it
+            float drag_coefficient = length(force);
+            drag_coefficient = k1 * drag_coefficient
+                     + k2 * drag_coefficient * drag_coefficient; // Drag is stronger at higher speeds
+
+            float3 drag_force = normalize(force);
+            drag_force = drag_force * -drag_coefficient; // Counter the existing force to go in the opposite direction
+
+    // Acceleration from forces
+            acceleration += drag_force;
+
+            p.velocity += acceleration * dt;
+            p.position += ((last_velocity + p.velocity) * 0.5f) * dt;
+            missed_frames -= 1;
+        }
+    }
+    else
+    {
+        float3 acceleration = gravity;
+        last_velocity = p.velocity;
+    // Drag
+        float3 force = p.velocity;
+
+        float k1 = cb_physics.drag_coeff_k1;
+        float k2 = cb_physics.drag_coeff_k2;
+
+        float drag_coefficient = length(force);
+        drag_coefficient = k1 * drag_coefficient
+                     + k2 * drag_coefficient * drag_coefficient; // Drag is stronger at higher speeds
+
+        float3 drag_force = normalize(force);
+        drag_force = drag_force * -drag_coefficient; // Counter the existing force to go in the opposite direction
+
+    // Acceleration from forces
+        acceleration += drag_force;
+        // Velocity
+        p.velocity += acceleration * dt;
+        p.position += ((last_velocity + p.velocity) * 0.5f) * dt;
+    }
+    // Velocity
+    //p.velocity += acceleration * dt;
+
+    // Damping
+    //p.velocity *= pow(damping, dt);
+
+    // Apply velocity verlet integration by averaging the new velocity with the last velocity
+    // This helps keeping the simulation more stable over time
+    //p.position += ((last_velocity + p.velocity) * 0.5f) * dt;
+
+    // Apply velocity
+    //p.position += p.velocity * dt;
+
+    // Output the particle with the simulation integrated to it
     output_particle[index] = p;
-
-    float3 pos = p.position;
-
-    // Calculate the bounding box vertices.
-    // 
-    // Temporary solution. Ideally we would calculate the min/max in a different dispatch to avoid race conditions.
-    // Wait for previous groupshared writes to finish.
-    GroupMemoryBarrier();
-
-    // Calculate min vertex of the bounding box
-    if (pos.x < v_min.x)
-    {
-        v_min.x = pos.x;
-    }
-    if (pos.y < v_min.y)
-    {
-        v_min.y = pos.y;
-    }
-    if (pos.z < v_min.z)
-    {
-        v_min.z = pos.z;
-    }
-
-    // Calculate max vertex of the bounding box
-    if (pos.x > v_max.x)
-    {
-        v_max.x = pos.x;
-    }
-    if (pos.y > v_max.y)
-    {
-        v_max.y = pos.y;
-    }
-    if (pos.z > v_max.z)
-    {
-        v_max.z = pos.z;
-    }
-
-    bounding_box new_bounds;
-
-    // Use WithGroupSync() to have a better chance that prior writes will finish before we read. Still not ideal.
-    // WithGroupSync() will force all the group threads to finish calculating the min/max above.
-    // Still a poor solution because it's still possible that a thread will write over v_min and v_max while we read.
-    GroupMemoryBarrierWithGroupSync();
-    new_bounds.position[0] = v_min;
-    new_bounds.position[1] = float3(v_min.x, v_max.y, v_min.z);
-    new_bounds.position[2] = float3(v_min.x, v_min.y, v_max.z);
-    new_bounds.position[3] = float3(v_min.x, v_max.y, v_max.z);
-    new_bounds.position[4] = float3(v_max.x, v_min.y, v_min.z);
-    new_bounds.position[5] = float3(v_max.x, v_max.y, v_min.z);
-    new_bounds.position[6] = float3(v_max.x, v_min.y, v_max.z);
-    new_bounds.position[7] = v_max;
-    bounds.Append(new_bounds);
 }

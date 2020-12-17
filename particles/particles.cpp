@@ -11,6 +11,7 @@
 #include "transform.h"
 #include "particle_system_gpu.h"
 #include "shaders/shader_shared_constants.h"
+#include <numeric>
 
 using namespace DirectX;
 
@@ -20,23 +21,39 @@ extern "C" __declspec(dllexport) void cleanup();
 extern "C" __declspec(dllexport) void wndproc(UINT msg, WPARAM wParam, LPARAM lParam);
 extern "C" __declspec(dllexport) bool initialize();
 
+float accum_1 = 0.f;
+float accum_2 = 0.f;
+int missed_frames_1 = 0;
+int missed_frames_2 = 0;
+
 // App state
+s_internal bool is_camera_debug_info_visible = false;
 s_internal void imgui_update();
 s_internal bool show_demo = true;
-s_internal bool is_vsync = false;
+s_internal bool is_vsync = true;
 s_internal bool is_waiting_present = true;
 s_internal bool is_gpu_culling = true;
 s_internal bool show_bounds = true;
 s_internal bool use_multiple_particle_systems = true;
+s_internal bool is_capturing_frames = false;
 
 // Command objects
 s_internal device_resources *dr = nullptr;
 s_internal ID3D12Device *device = nullptr;
+s_internal ID3D12CommandQueue *cmd_queue = nullptr;
+s_internal ID3D12CommandAllocator *cmd_alloc = nullptr;
 s_internal frame_resource *frame_resources[NUM_BACK_BUFFERS] = {};
 s_internal frame_resource *frame = nullptr;
 s_internal ID3D12GraphicsCommandList *main_cmdlist = nullptr;
-s_internal ID3D12CommandQueue *cmd_queue = nullptr;
-s_internal ID3D12CommandAllocator *cmd_alloc = nullptr;
+
+// Copy objects
+s_internal ID3D12GraphicsCommandList *reset_cmdlist = nullptr;
+s_internal ID3D12CommandAllocator *reset_alloc = nullptr;
+s_internal ID3D12CommandQueue *copy_queue = nullptr;
+s_internal ID3D12Fence *copy_fence = nullptr;
+s_internal UINT64 copy_fence_value = 0;
+s_internal HANDLE cpu_copy_wait_event = nullptr;
+s_internal bool is_first_reset = true;
 
 // Shader objects
 enum heap_offsets
@@ -46,7 +63,8 @@ enum heap_offsets
     heap_offset_uav_particle_systems_bounds,
     heap_offset_uav_filtered_simcmds,
     heap_offset_uav_filtered_drawcmds,
-    heap_offset_uav_filtered_bounds,
+    heap_offset_uav_filtered_bounds_drawcmds,
+    heap_offset_uav_filtered_bounds_calccmds,
 };
 
 void create_shader_objects();
@@ -62,6 +80,11 @@ s_internal ID3DBlob *floorgrid_blob_ps = nullptr;
 s_internal ID3DBlob *commands_blob_cs = nullptr;
 s_internal ID3DBlob *bounds_blob_vs = nullptr;
 s_internal ID3DBlob *bounds_blob_ps = nullptr;
+s_internal ID3DBlob *calc_bounds_blob_cs = nullptr;
+s_internal ID3DBlob *debug_lines_blob_vs = nullptr;
+s_internal ID3DBlob *debug_lines_blob_ps = nullptr;
+s_internal ID3DBlob *debug_planes_blob_vs = nullptr;
+s_internal ID3DBlob *debug_planes_blob_ps = nullptr;
 
 s_internal ID3D12PipelineState *billboard_pso = nullptr;
 s_internal ID3D12PipelineState *point_pso = nullptr;
@@ -70,6 +93,9 @@ s_internal ID3D12PipelineState *particle_sim_pso = nullptr;
 s_internal ID3D12PipelineState *floorgrid_pso = nullptr;
 s_internal ID3D12PipelineState *commands_pso = nullptr;
 s_internal ID3D12PipelineState *bounds_pso = nullptr;
+s_internal ID3D12PipelineState *calc_bounds_pso = nullptr;
+s_internal ID3D12PipelineState *debug_line_pso = nullptr;
+s_internal ID3D12PipelineState *debug_plane_pso = nullptr;
 
 // Textures
 ID3D12DescriptorHeap *srv_heap = nullptr;
@@ -96,31 +122,18 @@ s_internal std::string cpu_particle_sim = "cpu_particle_sim";
 // Particles data
 s_internal UINT num_particle_systems = 0;
 
-s_internal ID3D12Resource *particle_output_default = nullptr;
-s_internal ID3D12Resource *particle_input_default = nullptr;
 s_internal particle::particle_system_oop *particle_system = nullptr;
 s_internal std::array<particle::aligned_aos, particle_system->m_max_particles_per_frame> *particle_data = nullptr;
-s_internal bool should_reset_particles = false;
-s_internal model_data cb_model = {};
-s_internal float rot_x = 0.f;
-s_internal float rot_y = 0.f;
-s_internal float rot_z = 0.f;
-s_internal XMVECTOR particle_translation = XMVectorSet(0.f, 0.f, 0.f, 0.f);
-s_internal XMVECTOR particle_scale = XMVectorSet(1.f, 1.f, 1.f, 0.f);
 
 // new particle data
 s_internal std::vector<particle_system_gpu> particle_systems;
 s_internal void create_particle_systems_batch();
-s_internal void add_particle_system();
-s_internal size_t counter_aligned_simcmds_buffer_size = 0;
-s_internal size_t counter_aligned_bounds_uav_buffer_size = 0;
-
-// Transition data
 
 // Command signatures for indirect drawing/simulation
 s_internal ID3D12CommandSignature *drawing_cmd_sig = nullptr;
 s_internal ID3D12CommandSignature *particle_sim_cmd_sig = nullptr;
-s_internal ID3D12CommandSignature *bounds_cmd_sig = nullptr;
+s_internal ID3D12CommandSignature *bounds_drawing_cmd_sig = nullptr;
+s_internal ID3D12CommandSignature *bounds_calc_cmd_sig = nullptr;
 
 // Buffer used to group together all of the indirect simulation/drawing commands from all the particle systems
 s_internal ID3D12Resource *input_simcmds_grouped_default = nullptr;
@@ -129,21 +142,31 @@ s_internal ID3D12Resource *input_drawcmds_grouped_default = nullptr;
 s_internal ID3D12Resource *input_drawcmds_grouped_upload = nullptr;
 s_internal ID3D12Resource *input_bounds_drawcmds_grouped_default = nullptr;
 s_internal ID3D12Resource *input_bounds_drawcmds_grouped_upload = nullptr;
+s_internal ID3D12Resource *input_bounds_calccmds_grouped_default = nullptr;
+s_internal ID3D12Resource *input_bounds_calccmds_grouped_upload = nullptr;
 
-// Buffer used to received the filtered simulation/drawing commands that passed the furstum culling test
-s_internal ID3D12Resource *filtered_simcmds_default = nullptr;
-s_internal ID3D12Resource *filtered_simcmds_upload = nullptr;
+// Counters
 s_internal ID3D12Resource *simcmds_counter = nullptr;
 s_internal ID3D12Resource *simcmds_counter_reset = nullptr;
 s_internal ID3D12Resource *drawcmds_counter = nullptr;
 s_internal ID3D12Resource *drawcmds_counter_reset = nullptr;
-s_internal ID3D12Resource *bounds_counter = nullptr;
-s_internal ID3D12Resource *bounds_counter_reset = nullptr;
+s_internal ID3D12Resource *bounds_draw_counter = nullptr;
+s_internal ID3D12Resource *bounds_draw_counter_reset = nullptr;
+s_internal ID3D12Resource *bounds_calc_counter = nullptr;
+s_internal ID3D12Resource *bounds_calc_counter_reset = nullptr;
+s_internal ID3D12Resource *bounds_vertices_counter = nullptr;
+s_internal ID3D12Resource *bounds_vertices_counter_reset = nullptr;
+
+// Buffer used to received the filtered simulation/drawing commands that passed the furstum culling test
+s_internal ID3D12Resource *filtered_simcmds_default = nullptr;
+s_internal ID3D12Resource *filtered_simcmds_upload = nullptr;
 s_internal ID3D12Resource *filtered_drawcmds_default = nullptr;
 s_internal ID3D12Resource *filtered_drawcmds_grouped_upload = nullptr;
 s_internal ID3D12Resource *cleared_simcmds_default = nullptr;
 s_internal ID3D12Resource *filtered_bounds_drawcmds_default = nullptr;
 s_internal ID3D12Resource *filtered_bounds_drawcmds_upload = nullptr;
+s_internal ID3D12Resource *filtered_bounds_calccmds_default = nullptr;
+s_internal ID3D12Resource *filtered_bounds_calccmds_upload = nullptr;
 
 // Same as simulation_cmds_input, but with the particle_input_uav and particle_output_uav buffers swapped
 s_internal ID3D12Resource *swap_simcmds_grouped_default = nullptr;
@@ -154,27 +177,38 @@ s_internal ID3D12Resource *particle_system_bounds_vertices_default = nullptr;
 s_internal ID3D12Resource *particle_system_bounds_indices_default = nullptr;
 s_internal ID3D12Resource *particle_system_bounds_indices_upload = nullptr;
 
-// Buffers used before we did draw/dispatch call filtering
-s_internal ID3D12Resource *indirect_drawing_default = nullptr;
-s_internal ID3D12Resource *indirect_drawing_upload = nullptr;
-s_internal ID3D12Resource *indirect_sim_cmds_output_default = nullptr;
-s_internal ID3D12Resource *indirect_sim_cmds_output_upload = nullptr;
-s_internal ID3D12Resource *indirect_sim_cmds_input_default = nullptr;
-s_internal ID3D12Resource *indirect_sim_cmds_input_upload = nullptr;
-s_internal ID3D12Resource *indirect_sim_cmds_swap_default = nullptr;
-s_internal ID3D12Resource *indirect_sim_cmds_swap_upload = nullptr;
-
 // Camera
 s_internal ImVec2 last_mouse_pos = {};
-void update_camera_pos();
-camera cam = camera(0.25f * XM_PI, XMVectorSet(0.f, 0.f, -10.f, 1.f));
+enum camera_types
+{
+    main,
+    debug
+};
+camera_types current_camera = camera_types::main;
+s_internal INT num_cameras = 2;
+s_internal std::unique_ptr<camera> main_cam = nullptr;
+s_internal std::unique_ptr<camera> debug_cam = nullptr;
 
 // Scene
 mesh floor_grid = {};
 s_internal pass_data cb_pass = {};
+s_internal physics cb_physics = {};
 
 // Debugging
-IDXGraphicsAnalysis *ga;
+struct debug_mesh
+{
+    UINT vertices_byte_size;
+    UINT vertices_byte_offset;
+    UINT vertices_count;
+    UINT indices_byte_size;
+    UINT indices_byte_offset;
+    UINT indices_count;
+};
+s_internal ID3D12Resource *debug_indices_default = nullptr;
+s_internal ID3D12Resource *debug_indices_upload = nullptr;
+s_internal debug_mesh debugcam_frustum;
+s_internal debug_mesh debugcam_frustum_planes;
+s_internal debug_mesh maincam_frustum;
 
 extern "C" __declspec(dllexport) bool initialize()
 {
@@ -184,7 +218,8 @@ extern "C" __declspec(dllexport) bool initialize()
     check_hr(SetThreadDescription(GetCurrentThread(), L"main_thread"));
 
     // Initialize the camera
-    cam = camera(0.25f * XM_PI, XMVectorSet(0.f, 0.f, -10.f, 1.f));
+    main_cam = std::make_unique<camera>(transform({0.f, 0.f, -10.f}), 1.f, 1000.f);
+    debug_cam = std::make_unique<camera>(transform({0.f, 0.f, 0.f}), 1.f, 5.f);
 
     // Initialize device resources
     dr = new device_resources();
@@ -222,12 +257,37 @@ extern "C" __declspec(dllexport) bool initialize()
     }
     frame = frame_resources[0];
 
+    // Create the main rendering command list
     check_hr(device->CreateCommandList(DEFAULT_NODE,
                                        D3D12_COMMAND_LIST_TYPE_DIRECT,
                                        frame_resources[0]->cmd_alloc,
                                        nullptr,
                                        IID_PPV_ARGS(&main_cmdlist)));
     NAME_D3D12_OBJECT(main_cmdlist);
+
+    // Create the copy objects
+    cpu_copy_wait_event = CreateEventEx(NULL, NULL, NULL, EVENT_ALL_ACCESS);
+
+    D3D12_COMMAND_QUEUE_DESC copy_queue_desc = {};
+    copy_queue_desc.NodeMask = DEFAULT_NODE;
+    copy_queue_desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+    copy_queue_desc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+    copy_queue_desc.Type = D3D12_COMMAND_LIST_TYPE_COPY;
+    check_hr(device->CreateCommandQueue(&copy_queue_desc, IID_PPV_ARGS(&copy_queue)));
+    NAME_D3D12_OBJECT(copy_queue);
+
+    check_hr(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COPY, IID_PPV_ARGS(&reset_alloc)));
+    NAME_D3D12_OBJECT(reset_alloc);
+
+    check_hr(device->CreateCommandList(DEFAULT_NODE,
+                                       D3D12_COMMAND_LIST_TYPE_COPY,
+                                       reset_alloc,
+                                       nullptr,
+                                       IID_PPV_ARGS(&reset_cmdlist)));
+    NAME_D3D12_OBJECT(reset_cmdlist);
+
+    check_hr(device->CreateFence(copy_fence_value, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&copy_fence)));
+    NAME_D3D12_OBJECT(copy_fence);
 
     // Load textures
     create_texture_objects();
@@ -238,6 +298,99 @@ extern "C" __declspec(dllexport) bool initialize()
     // Initialize GPU timer
     query = new gpu_query(device, main_cmdlist, cmd_queue, &dr->backbuffer_index, NUM_QUERIES);
 
+    // Create indices buffer for debug frustums
+    std::vector<UINT16> frustum_indices = {0, 1, 1, 2, 2, 3, 3, 0,
+                                           0, 4, 1, 5, 2, 6, 3, 7,
+                                           4, 5, 5, 6, 6, 7, 7, 4,
+                                           4, 8, 5, 9, 6, 10, 7, 11,
+                                           8, 9, 9, 10, 10, 11, 11, 8};
+    UINT num_frustum_indices = (UINT)frustum_indices.size();
+
+    std::vector<UINT16> frustum_plane_indices = {
+        0,
+        1,
+        2, // Far plane
+        0,
+        2,
+        3,
+
+        4,
+        5,
+        6, // Projection plane
+        4,
+        6,
+        7,
+
+        8,
+        9,
+        10, // Near plane
+        8,
+        10,
+        11,
+
+        2,
+        3,
+        10, // Left plane
+        10,
+        3,
+        11,
+
+        1,
+        0,
+        9, // Right plane
+        9,
+        0,
+        8,
+
+        1,
+        2,
+        10, // Top plane
+        1,
+        10,
+        9,
+
+        0,
+        3,
+        11, // Bottom plane
+        0,
+        11,
+        8,
+
+    };
+
+    UINT num_frustum_plane_indices = (UINT)frustum_plane_indices.size();
+
+    std::vector<UINT16> indices(0);
+    indices.reserve(num_frustum_indices + num_frustum_plane_indices);
+    UINT indices_byte_offset = 0;
+    UINT index_size = sizeof(UINT16);
+
+    // Debug camera frustum
+    indices.insert(indices.begin(),
+                   frustum_indices.begin(), frustum_indices.end());
+    debugcam_frustum.indices_count = num_frustum_indices;
+    debugcam_frustum.indices_byte_offset = indices_byte_offset;
+    debugcam_frustum.indices_byte_size = index_size * debugcam_frustum.indices_count;
+
+    maincam_frustum.indices_count = num_frustum_indices;
+    maincam_frustum.indices_byte_offset = indices_byte_offset;
+    maincam_frustum.indices_byte_size = index_size * maincam_frustum.indices_count;
+
+    indices_byte_offset += maincam_frustum.indices_byte_size;
+
+    // Debug camera frustum planes indices
+    indices.insert(indices.end(),
+                   frustum_plane_indices.begin(), frustum_plane_indices.end());
+
+    debugcam_frustum_planes.indices_count = num_frustum_plane_indices;
+    debugcam_frustum_planes.indices_byte_offset = indices_byte_offset;
+    debugcam_frustum_planes.indices_byte_size = index_size * debugcam_frustum_planes.indices_count;
+
+    create_default_buffer(device, main_cmdlist,
+                          indices.data(), index_size * indices.size(),
+                          &debug_indices_upload, &debug_indices_default,
+                          "debug_indices");
+
     // Create the floor grid data
     mesh_data grid = create_grid(5.f, 5.f, 20, 20, "floor_grid");
     create_mesh_data(device, main_cmdlist, "floor_grid",
@@ -246,7 +399,7 @@ extern "C" __declspec(dllexport) bool initialize()
                      &floor_grid);
 
     // Create buffer to hold all of the particle_systems AABBs
-    size_t bounds_buffer_size = sizeof(box_positions) * num_particle_systems_at_launch;
+    size_t bounds_buffer_size = sizeof(bounding_box) * num_particle_systems_at_launch;
     check_hr(device->CreateCommittedResource(&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
                                              D3D12_HEAP_FLAG_NONE,
                                              &CD3DX12_RESOURCE_DESC::Buffer(bounds_buffer_size, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
@@ -255,7 +408,7 @@ extern "C" __declspec(dllexport) bool initialize()
                                              IID_PPV_ARGS(&particle_system_bounds_vertices_default)));
     NAME_D3D12_OBJECT(particle_system_bounds_vertices_default);
 
-    // Create buffer to hold the bounds indices
+    // Create buffer to hold the particle bounds indices
     UINT16 bounds_indices[24] = {
         0, 1, 0, 2,
         0, 4, 1, 3,
@@ -283,8 +436,8 @@ extern "C" __declspec(dllexport) bool initialize()
     uav_desc.Buffer.FirstElement = 0;
     uav_desc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
     uav_desc.Buffer.NumElements = num_particle_systems_at_launch;
-    uav_desc.Buffer.StructureByteStride = sizeof(box_positions);
-    device->CreateUnorderedAccessView(particle_system_bounds_vertices_default, nullptr, &uav_desc, handle);
+    uav_desc.Buffer.StructureByteStride = sizeof(bounding_box);
+    device->CreateUnorderedAccessView(particle_system_bounds_vertices_default, bounds_vertices_counter, &uav_desc, handle);
 
     handle.ptr = srv_heap->GetCPUDescriptorHandleForHeapStart().ptr + (dr->srv_desc_handle_incr_size * heap_offset_uav_filtered_simcmds);
     uav_desc.Buffer.NumElements = max_num_particle_systems;
@@ -298,8 +451,12 @@ extern "C" __declspec(dllexport) bool initialize()
     device->CreateUnorderedAccessView(filtered_drawcmds_default, drawcmds_counter, &uav_desc, handle);
 
     uav_desc.Buffer.StructureByteStride = sizeof(bounds_draw_indirect_command);
-    handle.ptr = srv_heap->GetCPUDescriptorHandleForHeapStart().ptr + (dr->srv_desc_handle_incr_size * heap_offset_uav_filtered_bounds);
-    device->CreateUnorderedAccessView(filtered_bounds_drawcmds_default, bounds_counter, &uav_desc, handle);
+    handle.ptr = srv_heap->GetCPUDescriptorHandleForHeapStart().ptr + (dr->srv_desc_handle_incr_size * heap_offset_uav_filtered_bounds_drawcmds);
+    device->CreateUnorderedAccessView(filtered_bounds_drawcmds_default, bounds_draw_counter, &uav_desc, handle);
+
+    uav_desc.Buffer.StructureByteStride = sizeof(bounds_calc_indirect_command);
+    handle.ptr = srv_heap->GetCPUDescriptorHandleForHeapStart().ptr + (dr->srv_desc_handle_incr_size * heap_offset_uav_filtered_bounds_calccmds);
+    device->CreateUnorderedAccessView(filtered_bounds_calccmds_default, bounds_calc_counter, &uav_desc, handle);
 
     // Indirect drawing command signature
     D3D12_INDIRECT_ARGUMENT_DESC draw_indirect_args[3] = {};
@@ -320,12 +477,18 @@ extern "C" __declspec(dllexport) bool initialize()
     NAME_D3D12_OBJECT(drawing_cmd_sig);
 
     // Indirect simulation command signature
-    D3D12_INDIRECT_ARGUMENT_DESC simulation_indirect_args[3] = {};
+    D3D12_INDIRECT_ARGUMENT_DESC simulation_indirect_args[5] = {};
     simulation_indirect_args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_UNORDERED_ACCESS_VIEW;
     simulation_indirect_args[0].UnorderedAccessView.RootParameterIndex = 2;
     simulation_indirect_args[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_UNORDERED_ACCESS_VIEW;
     simulation_indirect_args[1].UnorderedAccessView.RootParameterIndex = 3;
-    simulation_indirect_args[2].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+    simulation_indirect_args[2].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT_BUFFER_VIEW;
+    simulation_indirect_args[2].ConstantBufferView.RootParameterIndex = 15;
+    simulation_indirect_args[3].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
+    simulation_indirect_args[3].Constant.DestOffsetIn32BitValues = 0;
+    simulation_indirect_args[3].Constant.Num32BitValuesToSet = 2;
+    simulation_indirect_args[3].Constant.RootParameterIndex = 16;
+    simulation_indirect_args[4].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
 
     indirect_arg_size = (UINT)sizeof(simulation_indirect_command);
     cmdsig_desc.NumArgumentDescs = _countof(simulation_indirect_args);
@@ -347,8 +510,22 @@ extern "C" __declspec(dllexport) bool initialize()
     cmdsig_desc.NumArgumentDescs = _countof(bounds_draw_indirect_args);
     cmdsig_desc.pArgumentDescs = bounds_draw_indirect_args;
     cmdsig_desc.ByteStride = sizeof(bounds_draw_indirect_command);
-    check_hr(device->CreateCommandSignature(&cmdsig_desc, dr->rootsig, IID_PPV_ARGS(&bounds_cmd_sig)));
-    NAME_D3D12_OBJECT(bounds_cmd_sig);
+    check_hr(device->CreateCommandSignature(&cmdsig_desc, dr->rootsig, IID_PPV_ARGS(&bounds_drawing_cmd_sig)));
+    NAME_D3D12_OBJECT(bounds_drawing_cmd_sig);
+
+    // Bounds calculation command signature
+    D3D12_INDIRECT_ARGUMENT_DESC bounds_calc_indirect_args[3] = {};
+    bounds_calc_indirect_args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_UNORDERED_ACCESS_VIEW;
+    bounds_calc_indirect_args[0].UnorderedAccessView.RootParameterIndex = 2;
+    bounds_calc_indirect_args[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT_BUFFER_VIEW;
+    bounds_calc_indirect_args[1].ConstantBufferView.RootParameterIndex = 7;
+    bounds_calc_indirect_args[2].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+
+    cmdsig_desc.NumArgumentDescs = _countof(bounds_calc_indirect_args);
+    cmdsig_desc.pArgumentDescs = bounds_calc_indirect_args;
+    cmdsig_desc.ByteStride = sizeof(bounds_calc_indirect_command);
+    check_hr(device->CreateCommandSignature(&cmdsig_desc, dr->rootsig, IID_PPV_ARGS(&bounds_calc_cmd_sig)));
+    NAME_D3D12_OBJECT(bounds_calc_cmd_sig);
 
     // Execute initialization commands
     main_cmdlist->Close();
@@ -371,23 +548,32 @@ s_internal void create_particle_systems_batch()
                                          random_float(0.f, 1.f)};
         particle_data->at(i).size = 1.f;
         particle_data->at(i).age = 1.f;
+        particle_data->at(i).velocity = XMFLOAT3(
+            random_float(-20.f, 20.f),
+            random_float(5.f, 25.f),
+            random_float(-25.f, 25.f));
     }
 
     particle_systems.reserve(num_particle_systems_at_launch);
     for (size_t i = 0; i < num_particle_systems_at_launch; i++)
     {
-        D3D12_GPU_VIRTUAL_ADDRESS transforms_data = frame->cb_transforms_upload->m_upload->GetGPUVirtualAddress();
-        transforms_data += frame->cb_transforms_upload->m_element_byte_size * i;
+        D3D12_GPU_VIRTUAL_ADDRESS transforms_gpu_va = frame->cb_transforms_upload->m_upload->GetGPUVirtualAddress();
+        transforms_gpu_va += frame->cb_transforms_upload->m_element_byte_size * i;
 
-        UINT64 bounds_offset = sizeof(box_positions) * i;
-        D3D12_GPU_VIRTUAL_ADDRESS bounds_vertices_gpu_va = particle_system_bounds_vertices_default->GetGPUVirtualAddress() + bounds_offset;
+        D3D12_GPU_VIRTUAL_ADDRESS physics_gpu_va = frame->cb_physics->m_upload->GetGPUVirtualAddress();
+
+        D3D12_GPU_VIRTUAL_ADDRESS ps_bounds_indices_gpu_va = particle_system_bounds_indices_default->GetGPUVirtualAddress();
+
+        size_t bounds_offset = (sizeof(bounding_box) * i) + offsetof(bounding_box, positions);
+        D3D12_GPU_VIRTUAL_ADDRESS ps_bounds_vertices_gpu_va = particle_system_bounds_vertices_default->GetGPUVirtualAddress() + bounds_offset;
 
         particle_system_gpu system = particle_system_gpu(device, main_cmdlist,
                                                          particle_data.get(),
-                                                         transforms_data,
-                                                         max_particles_per_system,
-                                                         particle_system_bounds_indices_default->GetGPUVirtualAddress(),
-                                                         bounds_vertices_gpu_va);
+                                                         transforms_gpu_va,
+                                                         physics_gpu_va,
+                                                         ps_bounds_indices_gpu_va,
+                                                         ps_bounds_vertices_gpu_va,
+                                                         max_particles_per_system);
         system.m_transform.set_translation(i * 2.f, 0.f, 0.f);
         particle_systems.push_back(system);
     }
@@ -395,55 +581,80 @@ s_internal void create_particle_systems_batch()
     // Create the buffers that will hold all of the simulation commands
     size_t indirect_sim_size = sizeof(simulation_indirect_command);
     size_t indirect_buffer_size = indirect_sim_size * max_num_particle_systems;
-    int empty = 0;
     create_default_buffer(device, main_cmdlist,
-                          (void *)&empty, indirect_buffer_size,
-                          &input_simcmds_grouped_upload, &input_simcmds_grouped_default, "input_simcmds_grouped");
+                          nullptr, indirect_buffer_size,
+                          &input_simcmds_grouped_upload, &input_simcmds_grouped_default,
+                          "input_simcmds_grouped");
     create_default_buffer(device, main_cmdlist,
-                          (void *)&empty, indirect_buffer_size,
-                          &swap_simcmds_grouped_upload, &swap_simcmds_grouped_default, "swap_simcmds_grouped");
+                          nullptr, indirect_buffer_size,
+                          &swap_simcmds_grouped_upload, &swap_simcmds_grouped_default,
+                          "swap_simcmds_grouped");
     create_default_buffer(device, main_cmdlist,
-                          (void *)&empty, indirect_buffer_size,
-                          &filtered_simcmds_upload, &filtered_simcmds_default, "filtered_simcmds", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+                          nullptr, indirect_buffer_size,
+                          &filtered_simcmds_upload, &filtered_simcmds_default,
+                          "filtered_simcmds", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
     // Create the buffers that will hold the drawing commands
     size_t indirect_draw_size = sizeof(draw_indirect_command2);
     indirect_buffer_size = indirect_draw_size * max_num_particle_systems;
     create_default_buffer(device, main_cmdlist,
-                          (void *)&empty, indirect_buffer_size,
-                          &input_drawcmds_grouped_upload, &input_drawcmds_grouped_default, "input_drawcmds_grouped");
+                          nullptr, indirect_buffer_size,
+                          &input_drawcmds_grouped_upload, &input_drawcmds_grouped_default,
+                          "input_drawcmds_grouped");
 
     create_default_buffer(device, main_cmdlist,
-                          (void *)&empty, indirect_buffer_size,
-                          &filtered_drawcmds_grouped_upload, &filtered_drawcmds_default, "filtered_drawcmds", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+                          nullptr, indirect_buffer_size,
+                          &filtered_drawcmds_grouped_upload, &filtered_drawcmds_default,
+                          "filtered_drawcmds", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
+    // Create the buffers that will hold the bounds drawing commands
     size_t indirect_bounds_draw_size = sizeof(bounds_draw_indirect_command);
     indirect_buffer_size = indirect_bounds_draw_size * max_num_particle_systems;
     create_default_buffer(device, main_cmdlist,
-                          (void *)&empty, indirect_buffer_size,
+                          nullptr, indirect_buffer_size,
                           &input_bounds_drawcmds_grouped_upload, &input_bounds_drawcmds_grouped_default, "input_bounds_drawcmds");
     create_default_buffer(device, main_cmdlist,
-                          (void *)&empty, indirect_buffer_size,
+                          nullptr, indirect_buffer_size,
                           &filtered_bounds_drawcmds_upload, &filtered_bounds_drawcmds_default, "filtered_bounds_drawcmds", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+
+    // Create the buffers that will hold the bounds calculation commands
+    size_t indirect_bounds_calc_size = sizeof(bounds_calc_indirect_command);
+    indirect_buffer_size = indirect_bounds_calc_size * max_num_particle_systems;
+    create_default_buffer(device, main_cmdlist,
+                          nullptr, indirect_buffer_size,
+                          &input_bounds_calccmds_grouped_upload, &input_bounds_calccmds_grouped_default, "input_bounds_calccmds");
+    create_default_buffer(device, main_cmdlist,
+                          nullptr, indirect_buffer_size,
+                          &filtered_bounds_calccmds_upload, &filtered_bounds_calccmds_default, "filtered_bounds_calccmds", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
     // Create the buffers to hold the UAV counter and a reset buffer
     create_default_buffer(device, main_cmdlist,
-                          (void *)&empty, sizeof(UINT),
+                          nullptr, sizeof(UINT),
+                          &bounds_vertices_counter_reset, &bounds_vertices_counter, "filtered_simcmds_counter", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+    create_default_buffer(device, main_cmdlist,
+                          nullptr, sizeof(UINT),
                           &simcmds_counter_reset, &simcmds_counter, "filtered_simcmds_counter", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
     create_default_buffer(device, main_cmdlist,
-                          (void *)&empty, sizeof(UINT),
+                          nullptr, sizeof(UINT),
                           &drawcmds_counter_reset, &drawcmds_counter, "filtered_drawcmds_counter", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
     create_default_buffer(device, main_cmdlist,
-                          (void *)&empty, sizeof(UINT),
-                          &bounds_counter_reset, &bounds_counter, "bounds_counter", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+                          nullptr, sizeof(UINT),
+                          &bounds_draw_counter_reset, &bounds_draw_counter, "bounds_draw_counter", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+    create_default_buffer(device, main_cmdlist,
+                          nullptr, sizeof(UINT),
+                          &bounds_calc_counter_reset, &bounds_calc_counter, "bounds_calc_counter", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
-    // Clear the counters to 0s
+    // Clear the counters used to reset other counters to 0s
     BYTE *mapped_zeros = nullptr;
+    bounds_vertices_counter_reset->Map(0, {}, (void **)&mapped_zeros);
+    memset(mapped_zeros, 0, sizeof(UINT));
     simcmds_counter_reset->Map(0, {}, (void **)&mapped_zeros);
     memset(mapped_zeros, 0, sizeof(UINT));
     drawcmds_counter_reset->Map(0, {}, (void **)&mapped_zeros);
     memset(mapped_zeros, 0, sizeof(UINT));
-    bounds_counter_reset->Map(0, {}, (void **)&mapped_zeros);
+    bounds_draw_counter_reset->Map(0, {}, (void **)&mapped_zeros);
+    memset(mapped_zeros, 0, sizeof(UINT));
+    bounds_calc_counter_reset->Map(0, {}, (void **)&mapped_zeros);
     memset(mapped_zeros, 0, sizeof(UINT));
 
     // Transition
@@ -466,6 +677,9 @@ s_internal void create_particle_systems_batch()
         transitions.push_back(transition);
 
         transition.Transition.pResource = particle_system.m_indirect_drawing_bounds_default;
+        transitions.push_back(transition);
+
+        transition.Transition.pResource = particle_system.m_indirect_bounds_calc_default;
         transitions.push_back(transition);
     }
     main_cmdlist->ResourceBarrier((UINT)transitions.size(), transitions.data());
@@ -503,6 +717,16 @@ s_internal void create_particle_systems_batch()
         offset += indirect_bounds_draw_size;
     }
 
+    // Put all of the bounds calculation commands into the same default resource
+    offset = 0;
+    for (particle_system_gpu &particle_system : particle_systems)
+    {
+        main_cmdlist->CopyBufferRegion(input_bounds_calccmds_grouped_default, offset,
+                                       particle_system.m_indirect_bounds_calc_default, 0,
+                                       indirect_bounds_calc_size);
+        offset += indirect_bounds_calc_size;
+    }
+
     // Transition the buffers of grouped commands to be used as indirect arguments
     transitions.clear();
     transition.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
@@ -522,6 +746,9 @@ s_internal void create_particle_systems_batch()
     transition.Transition.pResource = input_bounds_drawcmds_grouped_default;
     transitions.push_back(transition);
 
+    transition.Transition.pResource = input_bounds_calccmds_grouped_default;
+    transitions.push_back(transition);
+
     transition.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
     transition.Transition.StateAfter = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
     transition.Transition.pResource = filtered_drawcmds_default;
@@ -532,22 +759,30 @@ s_internal void create_particle_systems_batch()
     main_cmdlist->ResourceBarrier((UINT)transitions.size(), transitions.data());
 }
 
-s_internal void add_particle_system()
-{
-}
-
 extern "C" __declspec(dllexport) bool update_and_render()
 {
     //
     // Update
     //
-    float dt = (float)timer.tick();
+    //float dt = (float)timer.tick();
+    float dt = 1.f/144.f;
 
     imgui_update();
 
     // Update camera
-    update_camera_pos();
-    cam.update_view();
+    switch (current_camera)
+    {
+    case main:
+        main_cam->update_position();
+        main_cam->update_view();
+        break;
+    case debug:
+        debug_cam->update_position();
+        debug_cam->update_view();
+        break;
+    }
+
+    particle_systems[0].m_transform.set_translation(0.f, 0.f, 15.f);
 
     // Update model data
     for (size_t i = 0; i < particle_systems.size(); i++)
@@ -555,14 +790,73 @@ extern "C" __declspec(dllexport) bool update_and_render()
         frame->cb_transforms_upload->copy_data((int)i, (model_data *)&particle_systems[i].m_transform.m_world_transposed);
     }
 
+    // Debug camera frustum
+    std::vector<position_color> debug_vertices(0);
+    UINT vertices_byte_offset = 0;
+    UINT vertex_size = sizeof(position_color);
+
+    std::vector<position_color> debugcam_frustum_positions = debug_cam->calc_frustum_vertices();
+    debugcam_frustum.vertices_count = (UINT)debugcam_frustum_positions.size();
+    debugcam_frustum.vertices_byte_offset = vertices_byte_offset;
+    debugcam_frustum.vertices_byte_size = vertex_size * debugcam_frustum.vertices_count;
+
+    // Debug camera frustum planes
+    debugcam_frustum_planes.vertices_count = (UINT)debugcam_frustum_positions.size();
+    debugcam_frustum_planes.vertices_byte_offset = vertices_byte_offset;
+    debugcam_frustum_planes.vertices_byte_size = vertex_size * debugcam_frustum_planes.vertices_count;
+
+    debug_vertices.insert(debug_vertices.end(),
+                          debugcam_frustum_positions.begin(), debugcam_frustum_positions.end());
+
+    vertices_byte_offset += debugcam_frustum.vertices_byte_size;
+
+    // Main camera frustum
+    std::vector<position_color> maincam_frustum_positions = main_cam->calc_frustum_vertices();
+    maincam_frustum.vertices_count = (UINT)maincam_frustum_positions.size();
+    maincam_frustum.vertices_byte_offset = vertices_byte_offset;
+    maincam_frustum.vertices_byte_size = vertex_size * maincam_frustum.vertices_count;
+
+    debug_vertices.insert(debug_vertices.end(),
+                          maincam_frustum_positions.begin(), maincam_frustum_positions.end());
+
+    for (size_t i = 0; i < debug_vertices.size(); i++)
+    {
+        frame->cb_debug_vertices_upload->copy_data((int)i, &debug_vertices[i]);
+    }
+
     // Update pass data
-    XMStoreFloat3(&cb_pass.eye_pos, cam.position);
-    XMStoreFloat4x4(&cb_pass.view, cam.view);
-    XMStoreFloat4x4(&cb_pass.proj, XMMatrixTranspose(cam.proj));
+    switch (current_camera)
+    {
+    case main:
+        cb_pass.eye_pos = main_cam->m_transform.m_translation;
+        cb_pass.view = main_cam->m_inv_view;
+        XMStoreFloat4x4(&cb_pass.proj, XMMatrixTranspose(XMLoadFloat4x4(&main_cam->m_proj)));
+
+        // Pass the other camera's planes
+        cb_pass.frustum_planes[0] = main_cam->m_far_plane;
+        cb_pass.frustum_planes[1] = main_cam->m_near_plane;
+        cb_pass.frustum_planes[2] = main_cam->m_bottom_plane;
+        cb_pass.frustum_planes[3] = main_cam->m_top_plane;
+        cb_pass.frustum_planes[4] = main_cam->m_left_plane;
+        cb_pass.frustum_planes[5] = main_cam->m_right_plane;
+        break;
+    case debug:
+        cb_pass.eye_pos = debug_cam->m_transform.m_translation;
+        cb_pass.view = debug_cam->m_inv_view;
+        XMStoreFloat4x4(&cb_pass.proj, XMMatrixTranspose(XMLoadFloat4x4(&debug_cam->m_proj)));
+
+        // Pass the other camera's planes
+        cb_pass.frustum_planes[0] = debug_cam->m_bottom_plane;
+        cb_pass.frustum_planes[1] = debug_cam->m_top_plane;
+        cb_pass.frustum_planes[2] = debug_cam->m_far_plane;
+        cb_pass.frustum_planes[3] = debug_cam->m_near_plane;
+        cb_pass.frustum_planes[4] = debug_cam->m_left_plane;
+        cb_pass.frustum_planes[5] = debug_cam->m_right_plane;
+        break;
+    }
     cb_pass.time = (float)timer.total_time;
     cb_pass.delta_time = dt;
     cb_pass.aspect_ratio = g_aspect_ratio;
-    cb_pass.vert_cotangent = cam.proj.r[1].m128_f32[1];
 
     // Update material data
     float &tex_u = cb_material.transform(3, 0);
@@ -576,26 +870,21 @@ extern "C" __declspec(dllexport) bool update_and_render()
 
     // Transform to animate texture coordinates in the opposite direction, at slightly different speeds
     //float inv_panning_tex_u = -(tex_u + (0.4f * dt));
+
     float inv_panning_tex_v = -(tex_v + (0.1f * dt));
     XMMATRIX inv_tex_transform = XMMatrixTranslation(tex_u, inv_panning_tex_v, 0.f);
     XMStoreFloat4x4(&cb_material.inv_transform, inv_tex_transform);
 
-    if (should_reset_particles)
-    {
-        for (size_t i = 0; i < _countof(frame_resources); i++)
-        {
-            particle_system->reset(reinterpret_cast<particle::particle>(frame_resources[i]->particle_vb_range));
-        }
-        should_reset_particles = false;
-    }
+    // Update physics data
+    frame->cb_physics->copy_data(0, &cb_physics);
 
     // Update particles
-    timer.start(cpu_particle_sim);
-    if (particle_system->m_simulation_mode == particle::simulation_mode::cpu)
-    {
-        particle_system->simulate(dt, frame);
-    }
-    timer.stop(cpu_particle_sim);
+    //timer.start(cpu_particle_sim);
+    //if (particle_system->m_simulation_mode == particle::simulation_mode::cpu)
+    //{
+    //    particle_system->simulate(dt, frame);
+    //}
+    //timer.stop(cpu_particle_sim);
 
     timer.start(cpu_wait_time);
     if (is_waiting_present)
@@ -620,7 +909,7 @@ extern "C" __declspec(dllexport) bool update_and_render()
     PIXEndEvent(main_cmdlist);
     PIXBeginEvent(main_cmdlist, 1, (std::string("Frame ") + std::to_string(timer.total_frame_count)).c_str());
 
-    frame->cb_pass_upload->copy_data(0, (void *)&cb_pass);
+    frame->cb_pass_upload->copy_data(0, &cb_pass);
 
     material_data transposed_mat = {};
     XMStoreFloat4x4(&transposed_mat.transform, XMMatrixTranspose(tex_transform));
@@ -645,7 +934,7 @@ extern "C" __declspec(dllexport) bool update_and_render()
 
     main_cmdlist->SetGraphicsRootSignature(dr->rootsig);
     main_cmdlist->SetComputeRootSignature(dr->rootsig);
-    main_cmdlist->SetGraphicsRootConstantBufferView(0, frame->cb_pass_upload->m_uploadbuffer->GetGPUVirtualAddress());
+    main_cmdlist->SetGraphicsRootConstantBufferView(0, frame->cb_pass_upload->m_upload->GetGPUVirtualAddress());
 
     // Draw floor grid
     PIXBeginEvent(main_cmdlist, 1, "Draw floor grid");
@@ -678,15 +967,23 @@ extern "C" __declspec(dllexport) bool update_and_render()
     transition.Transition.pResource = drawcmds_counter;
     transitions.push_back(transition);
 
-    transition.Transition.pResource = bounds_counter;
+    transition.Transition.pResource = bounds_draw_counter;
+    transitions.push_back(transition);
+
+    transition.Transition.pResource = bounds_calc_counter;
+    transitions.push_back(transition);
+
+    transition.Transition.pResource = bounds_vertices_counter;
     transitions.push_back(transition);
     main_cmdlist->ResourceBarrier((UINT)transitions.size(), transitions.data());
 
     // Reset the counters
     PIXBeginEvent(main_cmdlist, 1, "Reset counters");
+    main_cmdlist->CopyResource(bounds_vertices_counter, bounds_vertices_counter_reset);
     main_cmdlist->CopyResource(simcmds_counter, simcmds_counter_reset);
     main_cmdlist->CopyResource(drawcmds_counter, drawcmds_counter_reset);
-    main_cmdlist->CopyResource(bounds_counter, bounds_counter_reset);
+    main_cmdlist->CopyResource(bounds_draw_counter, bounds_draw_counter_reset);
+    main_cmdlist->CopyResource(bounds_calc_counter, bounds_calc_counter_reset);
     PIXEndEvent(main_cmdlist);
 
     // Transition to prepare for culling on simulation and draw commands
@@ -694,13 +991,19 @@ extern "C" __declspec(dllexport) bool update_and_render()
 
     transition.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
     transition.Transition.StateAfter = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+    transition.Transition.pResource = bounds_vertices_counter;
+    transitions.push_back(transition);
+
     transition.Transition.pResource = simcmds_counter;
     transitions.push_back(transition);
 
     transition.Transition.pResource = drawcmds_counter;
     transitions.push_back(transition);
 
-    transition.Transition.pResource = bounds_counter;
+    transition.Transition.pResource = bounds_draw_counter;
+    transitions.push_back(transition);
+
+    transition.Transition.pResource = bounds_calc_counter;
     transitions.push_back(transition);
 
     transition.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
@@ -713,7 +1016,14 @@ extern "C" __declspec(dllexport) bool update_and_render()
     transition.Transition.pResource = filtered_drawcmds_default;
     transitions.push_back(transition);
 
+    transition.Transition.StateBefore = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+    transition.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     transition.Transition.pResource = particle_system_bounds_vertices_default;
+    transitions.push_back(transition);
+
+    transition.Transition.StateBefore = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+    transition.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    transition.Transition.pResource = filtered_bounds_calccmds_default;
     transitions.push_back(transition);
 
     for (particle_system_gpu &particle_system : particle_systems)
@@ -728,13 +1038,17 @@ extern "C" __declspec(dllexport) bool update_and_render()
     main_cmdlist->SetPipelineState(commands_pso);
     main_cmdlist->SetDescriptorHeaps(1, &srv_heap);
 
-    main_cmdlist->SetComputeRootShaderResourceView(4, input_simcmds_grouped_default->GetGPUVirtualAddress());
+    main_cmdlist->SetComputeRootConstantBufferView(0, frame->cb_pass_upload->m_upload->GetGPUVirtualAddress());
+    main_cmdlist->SetComputeRoot32BitConstant(6, num_particle_systems, 0); // commands_count
+
+    //main_cmdlist->SetComputeRootShaderResourceView(4, input_simcmds_grouped_default->GetGPUVirtualAddress());
+    main_cmdlist->SetComputeRootUnorderedAccessView(4, input_simcmds_grouped_default->GetGPUVirtualAddress());
+
+    main_cmdlist->SetComputeRootShaderResourceView(13, input_bounds_calccmds_grouped_default->GetGPUVirtualAddress());
     CD3DX12_GPU_DESCRIPTOR_HANDLE filtered_simcmds_handle = {};
     filtered_simcmds_handle.ptr = srv_heap->GetGPUDescriptorHandleForHeapStart().ptr +
                                   (heap_offset_uav_filtered_simcmds * dr->srv_desc_handle_incr_size);
     main_cmdlist->SetComputeRootDescriptorTable(5, filtered_simcmds_handle);
-
-    main_cmdlist->SetComputeRoot32BitConstant(6, num_particle_systems, 0); // commands_count
 
     main_cmdlist->SetComputeRootShaderResourceView(9, input_drawcmds_grouped_default->GetGPUVirtualAddress());
     CD3DX12_GPU_DESCRIPTOR_HANDLE drawcmds_handle = {};
@@ -742,27 +1056,50 @@ extern "C" __declspec(dllexport) bool update_and_render()
                           (heap_offset_uav_filtered_drawcmds * dr->srv_desc_handle_incr_size);
     main_cmdlist->SetComputeRootDescriptorTable(10, drawcmds_handle);
 
+    CD3DX12_GPU_DESCRIPTOR_HANDLE particle_bounds_calc_handle = {};
+    particle_bounds_calc_handle.ptr = srv_heap->GetGPUDescriptorHandleForHeapStart().ptr +
+                                      (heap_offset_uav_filtered_bounds_calccmds * dr->srv_desc_handle_incr_size);
+    main_cmdlist->SetComputeRootDescriptorTable(14, particle_bounds_calc_handle);
+
     main_cmdlist->SetComputeRootShaderResourceView(11, input_bounds_drawcmds_grouped_default->GetGPUVirtualAddress());
+
+    main_cmdlist->SetComputeRootShaderResourceView(12, particle_system_bounds_vertices_default->GetGPUVirtualAddress());
     main_cmdlist->Dispatch(1, 1, 1);
     PIXEndEvent(main_cmdlist);
 
     // Indirect particle simulation
     PIXBeginEvent(main_cmdlist, 1, "Particle simulation");
     main_cmdlist->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+                                         particle_system_bounds_vertices_default,
+                                         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
+    main_cmdlist->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
                                          filtered_simcmds_default,
                                          D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                                          D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT));
 
     main_cmdlist->SetPipelineState(particle_sim_pso);
+
     CD3DX12_GPU_DESCRIPTOR_HANDLE particle_bounds_handle = {};
     particle_bounds_handle.ptr = srv_heap->GetGPUDescriptorHandleForHeapStart().ptr +
                                  (heap_offset_uav_particle_systems_bounds * dr->srv_desc_handle_incr_size);
-    main_cmdlist->SetComputeRootConstantBufferView(0, frame->cb_pass_upload->m_uploadbuffer->GetGPUVirtualAddress());
     main_cmdlist->SetComputeRootDescriptorTable(8, particle_bounds_handle);
 
     main_cmdlist->ExecuteIndirect(particle_sim_cmd_sig, num_particle_systems,
                                   filtered_simcmds_default, 0,
                                   simcmds_counter, 0);
+    PIXEndEvent(main_cmdlist);
+
+    // Calculate particle bounding boxes
+    PIXBeginEvent(main_cmdlist, 1, "Particle bounds calculation");
+    main_cmdlist->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+                                         filtered_bounds_calccmds_default,
+                                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                         D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT));
+    main_cmdlist->SetPipelineState(calc_bounds_pso);
+    main_cmdlist->ExecuteIndirect(bounds_calc_cmd_sig, num_particle_systems,
+                                  filtered_bounds_calccmds_default, 0,
+                                  bounds_calc_counter, 0);
     PIXEndEvent(main_cmdlist);
 
     // Indirect particle drawing
@@ -795,18 +1132,79 @@ extern "C" __declspec(dllexport) bool update_and_render()
         PIXBeginEvent(main_cmdlist, 1, "Particle bounds drawing");
         main_cmdlist->IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_LINELIST);
         main_cmdlist->SetPipelineState(bounds_pso);
-        main_cmdlist->ExecuteIndirect(bounds_cmd_sig, num_particle_systems,
+        main_cmdlist->ExecuteIndirect(bounds_drawing_cmd_sig, num_particle_systems,
                                       filtered_bounds_drawcmds_default, 0,
-                                      bounds_counter, 0);
+                                      bounds_draw_counter, 0);
         PIXEndEvent(main_cmdlist);
     }
 
-    // Swap command buffers
+    // Swap particle simulation command buffers
     ID3D12Resource *tmp = input_simcmds_grouped_default;
     input_simcmds_grouped_default = swap_simcmds_grouped_default;
     swap_simcmds_grouped_default = tmp;
 
     query->stop(gpu_particles_time_query);
+
+    // Draw debug objects
+    D3D12_GPU_VIRTUAL_ADDRESS vertices_gpu_va = frame->cb_debug_vertices_upload->m_upload->GetGPUVirtualAddress();
+    D3D12_GPU_VIRTUAL_ADDRESS indices_gpu_va = debug_indices_default->GetGPUVirtualAddress();
+    main_cmdlist->SetPipelineState(debug_line_pso);
+    main_cmdlist->IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_LINELIST);
+
+    // Debug cam
+    if (is_camera_debug_info_visible)
+    {
+        D3D12_VERTEX_BUFFER_VIEW debug_vbv;
+        debug_vbv.SizeInBytes = debugcam_frustum.vertices_byte_size;
+        debug_vbv.StrideInBytes = sizeof(position_color);
+        debug_vbv.BufferLocation = vertices_gpu_va + debugcam_frustum.vertices_byte_offset;
+        main_cmdlist->IASetVertexBuffers(0, 1, &debug_vbv);
+
+        D3D12_INDEX_BUFFER_VIEW debug_ibv;
+        debug_ibv.BufferLocation = indices_gpu_va + debugcam_frustum.indices_byte_offset;
+        debug_ibv.SizeInBytes = debugcam_frustum.indices_byte_size;
+        debug_ibv.Format = DXGI_FORMAT_R16_UINT;
+        main_cmdlist->IASetIndexBuffer(&debug_ibv);
+
+        main_cmdlist->DrawIndexedInstanced(debugcam_frustum.indices_count, 1, 0, 0, 0);
+
+        // Main cam
+        debug_vbv.SizeInBytes = maincam_frustum.vertices_byte_size;
+        debug_vbv.StrideInBytes = sizeof(position_color);
+        debug_vbv.BufferLocation = vertices_gpu_va + maincam_frustum.vertices_byte_offset;
+        main_cmdlist->IASetVertexBuffers(0, 1, &debug_vbv);
+
+        debug_ibv.BufferLocation = indices_gpu_va + maincam_frustum.indices_byte_offset;
+        debug_ibv.SizeInBytes = maincam_frustum.indices_byte_size;
+        debug_ibv.Format = DXGI_FORMAT_R16_UINT;
+        main_cmdlist->IASetIndexBuffer(&debug_ibv);
+
+        main_cmdlist->DrawIndexedInstanced(maincam_frustum.indices_count, 1, 0, 0, 0);
+
+        // Draw debug camera planes
+        main_cmdlist->SetPipelineState(debug_plane_pso);
+        main_cmdlist->IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+        D3D12_VERTEX_BUFFER_VIEW debug_planes_vbv;
+        debug_planes_vbv.BufferLocation = vertices_gpu_va + debugcam_frustum_planes.vertices_byte_offset;
+        debug_planes_vbv.StrideInBytes = sizeof(position_color);
+        debug_planes_vbv.SizeInBytes = debugcam_frustum_planes.vertices_byte_size;
+        main_cmdlist->IASetVertexBuffers(0, 1, &debug_planes_vbv);
+
+        D3D12_INDEX_BUFFER_VIEW debug_planes_ibv;
+        debug_planes_ibv.BufferLocation = indices_gpu_va + debugcam_frustum_planes.indices_byte_offset;
+        debug_planes_ibv.SizeInBytes = debugcam_frustum_planes.indices_byte_size;
+        debug_planes_ibv.Format = DXGI_FORMAT_R16_UINT;
+        main_cmdlist->IASetIndexBuffer(&debug_planes_ibv);
+
+        main_cmdlist->DrawIndexedInstanced(debugcam_frustum_planes.indices_count, 1, 0, 0, 0);
+    }
+
+    auto res = dr->readback<simulation_indirect_command>(input_simcmds_grouped_default, num_particle_systems_at_launch);
+    accum_1 = res[0].dt_accum;
+    accum_2 = res[1].dt_accum;
+    missed_frames_1 = res[0].missed_frames;
+    missed_frames_2 = res[1].missed_frames;
 
     // UI rendering
     PIXBeginEvent(main_cmdlist, 0, gpu_imgui_time_query.c_str());
@@ -844,6 +1242,29 @@ void imgui_update()
     imgui_mouse_pos();
     imgui_gpu_memory(dr->adapter);
 
+    ImGui::InputFloat("dt accum 1", &accum_1, 1.f, 1.2f, 3);
+    ImGui::InputFloat("dt accum 2", &accum_2, 1.f, 1.2f, 3);
+
+    ImGui::InputInt("missed frames 1", &missed_frames_1);
+    ImGui::InputInt("missed frames 2", &missed_frames_2);
+
+    if (!is_capturing_frames)
+    {
+        if (ImGui::Button("Begin capture"))
+        {
+            dr->begin_capture();
+            is_capturing_frames = true;
+        }
+    }
+    else
+    {
+        if (ImGui::Button("End capture"))
+        {
+            dr->end_capture();
+            is_capturing_frames = false;
+        }
+    }
+
     ImGui::Checkbox("VSync", &is_vsync);
     ImGui::Checkbox("Wait for Present()", &is_waiting_present);
 
@@ -867,51 +1288,88 @@ void imgui_update()
 
     ImGui::Spacing();
 
-    ImGui::Text("Particles alive: %d / %d", particle_system->m_num_particles_alive, particle_system->m_max_particles_per_frame);
-    ImGui::Text("Particles total: %d", particle_system->m_num_particles_total);
+    //ImGui::Text("Particles alive: %d / %d", particle_system->m_num_particles_alive, particle_system->m_max_particles_per_frame);
+    //ImGui::Text("Particles total: %d", particle_system->m_num_particles_total);
+
+    ImGui::Separator();
+    ImGui::Checkbox("Show camera debug planes", &is_camera_debug_info_visible);
+    imgui_combobox((int *)&current_camera, {"Main", "Debug"}, "Current camera");
+    ImGui::Separator();
 
     if (ImGui::Button("Reset particle system"))
-        should_reset_particles = true;
+    {
+        // Only need to set the reset_cmdlist once
+        if (is_first_reset)
+        {
+            size_t sim_offset = 0;
+            size_t draw_offset = 0;
+            size_t bounds_draw_offset = 0;
+            size_t bounds_calc_offset = 0;
+            size_t indirect_sim_size = sizeof(simulation_indirect_command);
+            size_t indirect_draw_size = sizeof(draw_indirect_command2);
+            size_t indirect_bounds_draw_size = sizeof(bounds_draw_indirect_command);
+            size_t indirect_bounds_calc_size = sizeof(bounds_calc_indirect_command);
 
-    imgui_combobox((int *)&particle_system->m_rendering_mode, {"Point", "Billboard", "Overdraw"}, "Particle rendering mode");
-    imgui_combobox((int *)&particle_system->m_simulation_mode, {"CPU", "GPU"}, "Particle simulation mode");
+            for (particle_system_gpu &particle_system : particle_systems)
+            {
+                particle_system.reset(reset_cmdlist);
 
-    // Transform
-    ImGui::SliderFloat3("Scale", particle_scale.m128_f32, 0.f, 20.f);
-    ImGui::SliderFloat3("Translation", particle_translation.m128_f32, -20.f, 20.f);
-    ImGui::SliderAngle("Rotation x", &rot_x);
-    ImGui::SliderAngle("Rotation y", &rot_y);
-    ImGui::SliderAngle("Rotation z", &rot_z);
-}
+                // Reset simulation commands
+                reset_cmdlist->CopyBufferRegion(input_simcmds_grouped_default, sim_offset,
+                                               particle_system.m_indirect_sim_cmds_input_default, 0,
+                                               indirect_sim_size);
+                reset_cmdlist->CopyBufferRegion(swap_simcmds_grouped_default, sim_offset,
+                                               particle_system.m_indirect_sim_cmds_swap_default, 0,
+                                               indirect_sim_size);
+                sim_offset += indirect_sim_size;
 
-void update_camera_pos()
-{
-    XMVECTOR s = XMVectorReplicate(0.02f);
-    if (GetAsyncKeyState('E'))
-    {
-        cam.position = XMVectorMultiplyAdd(-s, cam.up, cam.position);
-    }
-    if (GetAsyncKeyState('Q'))
-    {
-        cam.position = XMVectorMultiplyAdd(s, cam.up, cam.position);
+                //// Reset draw commands
+                //reset_cmdlist->CopyBufferRegion(input_drawcmds_grouped_default, draw_offset,
+                //                               particle_system.m_indirect_drawing_default, 0,
+                //                               indirect_draw_size);
+                //draw_offset += indirect_draw_size;
+
+                //// Reset bounds drawing commands
+                //reset_cmdlist->CopyBufferRegion(input_bounds_drawcmds_grouped_default, bounds_draw_offset,
+                //                               particle_system.m_indirect_drawing_bounds_default, 0,
+                //                               indirect_bounds_draw_size);
+                //bounds_draw_offset += indirect_bounds_draw_size;
+
+                //// Reset bounds calculation commands
+                //reset_cmdlist->CopyBufferRegion(input_bounds_calccmds_grouped_default, bounds_calc_offset,
+                //                               particle_system.m_indirect_bounds_calc_default, 0,
+                //                               indirect_bounds_calc_size);
+                //bounds_calc_offset += indirect_bounds_calc_size;
+            }
+
+            reset_cmdlist->Close();
+
+            is_first_reset = false;
+        }
+
+        // Wait for the graphics queue to finish reading the resources before we reset them
+        dr->debug_copy_queue->Wait(dr->fence, dr->last_signaled_fence_value);
+        dr->debug_copy_queue->ExecuteCommandLists(1, (ID3D12CommandList *const *)&reset_cmdlist);
+        dr->debug_copy_queue->Signal(dr->copy_fence, ++dr->copy_fence_value);
+
+        // Right now, this is preventing the graphics queue from reading too early,
+        // because it's on the same thread as the copy queue
+        dr->copy_fence->SetEventOnCompletion(dr->copy_fence_value, dr->copy_fence_event);
+        WaitForSingleObject(dr->copy_fence_event, INFINITE);
+
+        //for (size_t i = 0; i < _countof(frame_resources); i++)
+        //{
+        //    particle_system->reset(reinterpret_cast<particle::particle>(frame_resources[i]->particle_vb_range));
+        //}
     }
 
-    if (GetAsyncKeyState('W'))
-    {
-        cam.position = XMVectorMultiplyAdd(s, cam.forward, cam.position);
-    }
-    if (GetAsyncKeyState('S'))
-    {
-        cam.position = XMVectorMultiplyAdd(-s, cam.forward, cam.position);
-    }
-    if (GetAsyncKeyState('A'))
-    {
-        cam.position = XMVectorMultiplyAdd(-s, cam.right, cam.position);
-    }
-    if (GetAsyncKeyState('D'))
-    {
-        cam.position = XMVectorMultiplyAdd(s, cam.right, cam.position);
-    }
+    ImGui::Separator();
+    ImGui::Text("Physics parameters");
+    ImGui::DragFloat2("Drag coefficients", cb_physics.drag_coefficients, 0.25f, 0.f, 50.f);
+    ImGui::Separator();
+
+    //imgui_combobox((int *)&particle_system->m_rendering_mode, {"Point", "Billboard", "Overdraw"}, "Particle rendering mode");
+    //imgui_combobox((int *)&particle_system->m_simulation_mode, {"CPU", "GPU"}, "Particle simulation mode");
 }
 
 void create_shader_objects()
@@ -939,6 +1397,16 @@ void create_shader_objects()
     compile_shader(L"..\\..\\particles\\shaders\\bounds.hlsl", L"VS", shader_type::vertex, &bounds_blob_vs);
     compile_shader(L"..\\..\\particles\\shaders\\bounds.hlsl", L"PS", shader_type::pixel, &bounds_blob_ps);
 
+    // Bounding box calculator
+    compile_shader(L"..\\..\\particles\\shaders\\calculate_bounds.hlsl", L"CS", shader_type::compute, &calc_bounds_blob_cs);
+
+    // Debug visualization shaders
+    compile_shader(L"..\\..\\particles\\shaders\\debug.hlsl", L"VS", shader_type::vertex, &debug_lines_blob_vs);
+    compile_shader(L"..\\..\\particles\\shaders\\debug.hlsl", L"PS", shader_type::pixel, &debug_lines_blob_ps);
+
+    compile_shader(L"..\\..\\particles\\shaders\\debug_plane.hlsl", L"VS", shader_type::vertex, &debug_planes_blob_vs);
+    compile_shader(L"..\\..\\particles\\shaders\\debug_plane.hlsl", L"PS", shader_type::pixel, &debug_planes_blob_ps);
+
     std::vector<CD3DX12_ROOT_PARAMETER1> params = {};
 
     // (root) ConstantBuffer<pass_data> cb_pass : register(b0);
@@ -965,10 +1433,15 @@ void create_shader_objects()
     param_input_particle.InitAsUnorderedAccessView(1, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE);
     params.push_back(param_input_particle);
 
-    // (table) StructuredBuffer<sim_indirect_command> : register(t1);
+    // (table) StructuredBuffer<sim_indirect_command> : register(u8);
     CD3DX12_ROOT_PARAMETER1 param_in_commands = {};
-    param_in_commands.InitAsShaderResourceView(1, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC);
+    param_in_commands.InitAsUnorderedAccessView(8, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE);
     params.push_back(param_in_commands);
+
+    //// (table) StructuredBuffer<sim_indirect_command> : register(t1);
+    //CD3DX12_ROOT_PARAMETER1 param_in_commands = {};
+    //param_in_commands.InitAsShaderResourceView(1, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC);
+    //params.push_back(param_in_commands);
 
     // (table) AppendWStructuredBuffer<indirect_command> : register(u2);
     CD3DX12_DESCRIPTOR_RANGE1 cmd_ranges[1];
@@ -987,7 +1460,7 @@ void create_shader_objects()
     param_model.InitAsConstantBufferView(3, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC);
     params.push_back(param_model);
 
-    // (table) AppendStructuredBuffer<bound> : register(u3);
+    // (table) AppendStructuredBuffer<bounding_box> : register(u3);
     CD3DX12_DESCRIPTOR_RANGE1 uav_range[1];
     uav_range[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 3, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE);
     CD3DX12_ROOT_PARAMETER1 param_bounds;
@@ -1006,10 +1479,37 @@ void create_shader_objects()
     param_draw_cmds.InitAsDescriptorTable(_countof(draw_cmd_ranges), draw_cmd_ranges);
     params.push_back(param_draw_cmds);
 
-    // (root ) StructuredBuffer<bounds_draw_indirect_command> in_bounds_draw_commands : register(t3);
+    // (root) StructuredBuffer<bounds_draw_indirect_command> in_bounds_draw_commands : register(t3);
     CD3DX12_ROOT_PARAMETER1 param_input_bounds_drawcmds = {};
     param_input_bounds_drawcmds.InitAsShaderResourceView(3, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC);
     params.push_back(param_input_bounds_drawcmds);
+
+    // (root) StructuredBuffer<bounding_box> inputs : register(u6);
+    CD3DX12_ROOT_PARAMETER1 param_bounds_read = {};
+    param_bounds_read.InitAsShaderResourceView(5, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE);
+    params.push_back(param_bounds_read);
+
+    // (root) StructuredBuffer<bounds_calc_indirect_command> in_bounds_calc_commands : register(t4);
+    CD3DX12_ROOT_PARAMETER1 param_input_bounds_calccmds = {};
+    param_input_bounds_calccmds.InitAsShaderResourceView(4, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC);
+    params.push_back(param_input_bounds_calccmds);
+
+    // AppendStructuredBuffer<bounds_calc_indirect_command> out_bounds_calc_commands : register(u7);
+    CD3DX12_DESCRIPTOR_RANGE1 calc_cmd_ranges[1];
+    calc_cmd_ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 7, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE);
+    CD3DX12_ROOT_PARAMETER1 param_calc_cmds = {};
+    param_calc_cmds.InitAsDescriptorTable(_countof(calc_cmd_ranges), calc_cmd_ranges);
+    params.push_back(param_calc_cmds);
+
+    // (root) ConstantBuffer<physics> cb_physics : register(b4);
+    CD3DX12_ROOT_PARAMETER1 physics_param = {};
+    physics_param.InitAsConstantBufferView(4, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC);
+    params.push_back(physics_param);
+
+    //ConstantBuffer<per_particle_system_constants> cb_ps_data : register(b5);
+    CD3DX12_ROOT_PARAMETER1 dt_param = {};
+    dt_param.InitAsConstants(2, 5);
+    params.push_back(dt_param);
 
     // Samplers
     std::vector<CD3DX12_STATIC_SAMPLER_DESC> samplers = {};
@@ -1127,6 +1627,25 @@ void create_shader_objects()
     check_hr(device->CreateGraphicsPipelineState(&bounds_pso_desc, IID_PPV_ARGS(&bounds_pso)));
     NAME_D3D12_OBJECT(bounds_pso);
 
+    // Debug lines PSO
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC debug_lines_pso_desc = dr->create_default_pso_desc(&mesh_input_elem_desc);
+    debug_lines_pso_desc.VS = {debug_lines_blob_vs->GetBufferPointer(), debug_lines_blob_vs->GetBufferSize()};
+    debug_lines_pso_desc.PS = {debug_lines_blob_ps->GetBufferPointer(), debug_lines_blob_ps->GetBufferSize()};
+    debug_lines_pso_desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    debug_lines_pso_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+    check_hr(device->CreateGraphicsPipelineState(&debug_lines_pso_desc, IID_PPV_ARGS(&debug_line_pso)));
+    NAME_D3D12_OBJECT(debug_line_pso);
+
+    // Debug planes PSO
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC debug_planes_pso_desc = dr->create_default_pso_desc(&mesh_input_elem_desc);
+    debug_planes_pso_desc.VS = {debug_planes_blob_vs->GetBufferPointer(), debug_planes_blob_vs->GetBufferSize()};
+    debug_planes_pso_desc.PS = {debug_planes_blob_ps->GetBufferPointer(), debug_planes_blob_ps->GetBufferSize()};
+    debug_planes_pso_desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    debug_planes_pso_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    debug_planes_pso_desc.BlendState = transparency_blend_desc;
+    check_hr(device->CreateGraphicsPipelineState(&debug_planes_pso_desc, IID_PPV_ARGS(&debug_plane_pso)));
+    NAME_D3D12_OBJECT(debug_plane_pso);
+
     // Particle simulation compute PSO
     D3D12_COMPUTE_PIPELINE_STATE_DESC particle_sim_pso_desc = {};
     particle_sim_pso_desc.CS = {particle_sim_blob_cs->GetBufferPointer(), particle_sim_blob_cs->GetBufferSize()};
@@ -1141,6 +1660,12 @@ void create_shader_objects()
     commands_filtering_pso_desc.CS = {commands_blob_cs->GetBufferPointer(), commands_blob_cs->GetBufferSize()};
     check_hr(device->CreateComputePipelineState(&commands_filtering_pso_desc, IID_PPV_ARGS(&commands_pso)));
     NAME_D3D12_OBJECT(commands_pso);
+
+    // Bounds calculator pso
+    D3D12_COMPUTE_PIPELINE_STATE_DESC calc_bounds_pso_desc = particle_sim_pso_desc;
+    calc_bounds_pso_desc.CS = {calc_bounds_blob_cs->GetBufferPointer(), calc_bounds_blob_cs->GetBufferSize()};
+    check_hr(device->CreateComputePipelineState(&calc_bounds_pso_desc, IID_PPV_ARGS(&calc_bounds_pso)));
+    NAME_D3D12_OBJECT(calc_bounds_pso);
 }
 
 void create_texture_objects()
@@ -1183,7 +1708,7 @@ void create_texture_objects()
     srv_heap_desc.NodeMask = DEFAULT_NODE;
     srv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     srv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    srv_heap_desc.NumDescriptors = 6;
+    srv_heap_desc.NumDescriptors = 8;
     check_hr(device->CreateDescriptorHeap(&srv_heap_desc, IID_PPV_ARGS(&srv_heap)));
 
     // Create the fire texture's SRV
@@ -1215,7 +1740,7 @@ extern "C" __declspec(dllexport) void resize(int width, int height)
     dr->wait_last_frame();
     ImGui_ImplDX12_InvalidateDeviceObjects();
     dr->resize(width, height);
-    cam.update_projection();
+    main_cam->calc_projection();
     ImGui_ImplDX12_CreateDeviceObjects();
 }
 
@@ -1231,12 +1756,9 @@ extern "C" __declspec(dllexport) void cleanup()
     safe_release(point_pso);
     safe_release(billboard_pso);
     safe_release(floorgrid_pso);
-    safe_release(particle_input_default);
-    safe_release(particle_output_default);
     safe_release(main_cmdlist);
     safe_release(fire_texture_default_resource);
     safe_release(fire_texture_upload_resource);
-    safe_release(indirect_drawing_default);
     safe_release(floor_grid.resource->index_default);
     safe_release(floor_grid.resource->index_upload);
     safe_release(floor_grid.resource->vertex_default);
@@ -1269,8 +1791,19 @@ extern "C" __declspec(dllexport) void wndproc(UINT msg, WPARAM wParam, LPARAM lP
         {
             if (ImGui::IsMouseDown(ImGuiMouseButton_Left))
             {
-                cam.update_yaw_pitch(XMFLOAT2(ImGui::GetMousePos().x, ImGui::GetMousePos().y),
-                                     XMFLOAT2(last_mouse_pos.x, last_mouse_pos.y));
+                switch (current_camera)
+                {
+                case main:
+                    main_cam->update_yaw_pitch(XMFLOAT2(ImGui::GetMousePos().x, ImGui::GetMousePos().y),
+                                               XMFLOAT2(last_mouse_pos.x, last_mouse_pos.y));
+                    break;
+                case debug:
+                    debug_cam->update_yaw_pitch(XMFLOAT2(ImGui::GetMousePos().x, ImGui::GetMousePos().y),
+                                                XMFLOAT2(last_mouse_pos.x, last_mouse_pos.y));
+                    break;
+                default:
+                    break;
+                }
             }
         }
 

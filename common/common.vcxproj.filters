@@ -42,10 +42,13 @@
     <ClInclude Include="step_timer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="geometry_helpers.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="camera.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="geometry_helpers.h">
+    <ClInclude Include="transform.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
@@ -68,10 +71,10 @@
     <ClCompile Include="math_helpers.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="camera.cpp">
+    <ClCompile Include="geometry_helpers.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="geometry_helpers.cpp">
+    <ClCompile Include="camera.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

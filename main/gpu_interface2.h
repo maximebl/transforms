@@ -8,7 +8,8 @@ struct upload_buffer2
 {
     upload_buffer2(ID3D12Device *device,
                    size_t element_count,
-                   bool is_constant_buffer = false)
+                   bool is_constant_buffer = false,
+                   D3D12_RESOURCE_FLAGS flag = D3D12_RESOURCE_FLAG_NONE)
     {
         m_element_byte_size = sizeof(T);
         if (is_constant_buffer)
@@ -17,7 +18,7 @@ struct upload_buffer2
         device->CreateCommittedResource(
             &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
             D3D12_HEAP_FLAG_NONE,
-            &CD3DX12_RESOURCE_DESC::Buffer(m_element_byte_size * element_count),
+            &CD3DX12_RESOURCE_DESC::Buffer(m_element_byte_size * element_count, flag),
             D3D12_RESOURCE_STATE_GENERIC_READ,
             nullptr,
             IID_PPV_ARGS(&m_upload));
